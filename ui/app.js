@@ -104,7 +104,10 @@ function alternative() {
 
 // refresh polls the state; the page is rebuilt only when something changed,
 // so keyboard focus is not lost every two seconds.
+let removed = false; // uninstall was requested: the page is done
+
 async function refresh(force) {
+  if (removed) return;
   let next;
   try {
     next = await api('/api/state');
@@ -785,6 +788,14 @@ document.addEventListener('DOMContentLoaded', () => {
   $('add').addEventListener('click', () => openSheet(null));
   $('test-all').addEventListener('click', () => state.profiles.forEach((p) => test(p.name)));
   $('recheck').addEventListener('click', () => { check = null; runCheck(); });
+  $('uninstall').addEventListener('click', async () => {
+    if (!confirm('Удалить Claudeguard? Правила kill switch, фоновый прокси, значок и настройки прокси в Claude Code будут убраны: Claude снова пойдёт напрямую. Понадобится пароль администратора.')) return;
+    try {
+      await api('/api/uninstall', {});
+      removed = true;
+      document.querySelector('main').replaceChildren(el('p', 'foot', 'Claudeguard удаляется: подтвердите действие паролем администратора в системном окне. Эту вкладку можно закрыть.'));
+    } catch (e) { alert(e.message); }
+  });
   $('tun').addEventListener('click', () => editDraft({ allow: $('tun').getAttribute('aria-checked') !== 'true' }));
   $('extra').addEventListener('input', () => editDraft({ extra: $('extra').value }));
   $('fw-cancel').addEventListener('click', () => { fwDraft = null; fwError = ''; renderKillSwitch(); });

@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	binPath      = "/usr/local/bin/claudeguard"
-	stateDir     = "/Library/Application Support/claudeguard"
+	stateDir = "/Library/Application Support/claudeguard"
+	// The root daemon runs this copy. It sits in a directory only root can
+	// write; /usr/local/bin belongs to the user on some Macs.
+	binPath      = stateDir + "/claudeguard"
+	cliLink      = "/usr/local/bin/claudeguard"
 	tokenFile    = stateDir + "/pf.token"
 	rulesFile    = stateDir + "/rules.pf"
 	daemonLabel  = "com.claudeguard.firewall"
@@ -55,7 +58,7 @@ func elevateGUI(args []string) error {
 	shell := strings.Join(quoted, " ")
 	lit := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(shell)
 	out, err := exec.Command(systemTools["osascript"], "-e",
-		`do shell script "`+lit+`" with prompt "Claudeguard хочет обновить правила kill switch." with administrator privileges`).CombinedOutput()
+		`do shell script "`+lit+`" with prompt "Claudeguard меняет правила kill switch." with administrator privileges`).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if strings.Contains(msg, "-128") {
@@ -268,11 +271,16 @@ func systemInstall(o FirewallOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return err
 	}
 	if err := copyFile(exe, binPath, 0o755); err != nil {
 		return err
+	}
+	// `claudeguard` in a terminal; best effort, the app works without it.
+	if os.MkdirAll(filepath.Dir(cliLink), 0o755) == nil {
+		_ = os.Remove(cliLink)
+		_ = os.Symlink(binPath, cliLink)
 	}
 	if err := enableFirewall(o); err != nil {
 		return err
@@ -300,7 +308,9 @@ func systemUninstall() error {
 	_, _ = run("launchctl", "bootout", "system/"+daemonLabel)
 	_ = os.Remove(daemonPlist)
 	err := disableFirewall()
-	_ = os.Remove(binPath)
+	if dst, e := os.Readlink(cliLink); e == nil && dst == binPath {
+		_ = os.Remove(cliLink)
+	}
 	_ = os.RemoveAll(stateDir)
 	return err
 }
@@ -350,7 +360,11 @@ func userInstall(cfg Config, launcher bool) error {
 		} {
 			_ = os.MkdirAll(filepath.Dir(l.path), 0o755)
 			_ = os.RemoveAll(l.path)
-			script := fmt.Sprintf(`do shell script "%s %s > /dev/null 2>&1 &"`, binPath, l.cmd)
+			// Claudeguard.app itself opens the settings page.
+			if l.cmd == "ui" && launchedFromGUI() {
+				continue
+			}
+			script := fmt.Sprintf(`do shell script quoted form of "%s" & " %s > /dev/null 2>&1 &"`, binPath, l.cmd)
 			if _, err := run("osacompile", "-o", l.path, "-e", script); err != nil {
 				return err
 			}
@@ -437,3 +451,45 @@ func launchApp(cfg Config, app string) error {
 }
 
 func hideChildWindow(*exec.Cmd) {}
+
+// launchedFromGUI: the binary inside Claudeguard.app, started by Finder.
+func launchedFromGUI() bool {
+	exe, _ := os.Executable()
+	return strings.Contains(exe, ".app/Contents/MacOS/")
+}
+
+func hideConsole() {}
+
+// misplaced catches the app being run straight from the disk image: it
+// would install fine, but the app itself would be gone after ejecting.
+func misplaced() string {
+	exe, _ := os.Executable()
+	if strings.HasPrefix(exe, "/Volumes/") || strings.Contains(exe, "/AppTranslocation/") {
+		return "Сначала перетащите Claudeguard в папку «Программы» и запустите его оттуда."
+	}
+	return ""
+}
+
+// installed reports whether both halves are in place and run this binary.
+func installed() bool {
+	for _, p := range []string{daemonPlist, agentPlistPath()} {
+		if _, err := os.Stat(p); err != nil {
+			return false
+		}
+	}
+	exe, _ := os.Executable()
+	return sameFile(exe, binPath)
+}
+
+func dialog(kind, text string) bool {
+	buttons, icon := `{"OK"} default button 1`, "note"
+	switch kind {
+	case "ask":
+		buttons = `{"Отмена", "Установить"} default button 2 cancel button 1`
+	case "error":
+		icon = "stop"
+	}
+	lit := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(text)
+	return exec.Command(systemTools["osascript"], "-e",
+		`display dialog "`+lit+`" with title "Claudeguard" buttons `+buttons+` with icon `+icon).Run() == nil
+}

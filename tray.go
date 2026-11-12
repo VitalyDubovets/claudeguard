@@ -1,4 +1,4 @@
-//go:build darwin || windows
+//go:build darwin || windows || linux
 
 package main
 
@@ -15,7 +15,7 @@ import (
 )
 
 // cmdTray puts claudeguard into the menu bar (macOS) or the notification
-// area (Windows). It is a separate process and only a client of the settings
+// area (Windows, Linux desktops with a StatusNotifier tray). It is a separate process and only a client of the settings
 // API: the proxy keeps working whether the icon is there or not.
 func cmdTray(args []string) error {
 	if len(args) == 1 && args[0] == "--detach" {

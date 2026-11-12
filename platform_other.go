@@ -1,4 +1,4 @@
-//go:build !darwin && !windows
+//go:build !darwin && !windows && !linux
 
 package main
 
@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var errUnsupported = errors.New("only macOS and Windows are supported; `serve` works everywhere")
+var errUnsupported = errors.New("only macOS, Windows and Linux are supported; `serve` works everywhere")
 
 func isRoot() bool                         { return false }
 func elevate([]string) error               { return errUnsupported }
@@ -24,6 +24,11 @@ func userUninstall() error                 { return errUnsupported }
 func detachServe([]string) error           { return errUnsupported }
 func launchApp(Config, string) error       { return errUnsupported }
 func elevateGUI([]string) error            { return errUnsupported }
+func launchedFromGUI() bool                { return false }
+func installed() bool                      { return false }
+func hideConsole()                         {}
+func misplaced() string                    { return "" }
+func dialog(string, string) bool           { return false }
 
 func openBrowser(url string) error { return exec.Command("xdg-open", url).Start() }
 

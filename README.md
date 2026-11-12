@@ -2,7 +2,7 @@
 
 Пускает Claude (десктоп-приложение и Claude Code) через выбранный прокси или VPN. Если прокси или VPN упали, Claude остаётся без сети и не уходит напрямую (kill switch).
 
-macOS и Windows, один бинарник на Go. Серверы переключаются в локальной панели настроек или в значке в строке меню, без перезапуска Claude. Новый SSH-сервер настраивается прямо в панели: нужны адрес и пароль.
+macOS, Windows и Linux (Ubuntu/Debian, Fedora, Arch, SteamOS), один бинарник на Go с установщиком под каждую систему. Серверы переключаются в локальной панели настроек или в значке в строке меню, без перезапуска Claude. Новый SSH-сервер настраивается прямо в панели: нужны адрес и пароль.
 
 ## Как это устроено
 
@@ -13,6 +13,7 @@ macOS и Windows, один бинарник на Go. Серверы перекл
    ([официальный список](https://platform.claude.com/docs/en/api/ip-addresses)). На них живут claude.ai, api.anthropic.com и эндпоинты Claude Code.
    - macOS: правила pf в анкере `com.apple/claudeguard`. `/etc/pf.conf` не меняется. LaunchDaemon восстанавливает правила при загрузке и проверяет их каждые 15–60 с.
    - Windows: правило Windows Firewall в группе `claudeguard`. Правила блокировки там сильнее правил разрешения, а сами правила переживают перезагрузку.
+   - Linux: таблица nftables `inet claudeguard` (цепочки output и forward, так что контейнеры и виртуальные машины на этой машине тоже закрыты). Нет `nft` — та же логика через iptables, цепочка `CLAUDEGUARD`. Юнит systemd `claudeguard-firewall.service` ставит правила до поднятия сети, таймер раз в минуту возвращает их, если другой инструмент сбросил весь набор правил.
 
    Это правила ОС, а не процесс. Если claudeguard упадёт, Claude обновится или кто-то запустит его в обход лаунчера, прямого пути к Anthropic всё равно нет.
 
@@ -25,43 +26,88 @@ macOS и Windows, один бинарник на Go. Серверы перекл
 | Режим | Флаг | Что разрешено к Anthropic |
 |---|---|---|
 | Только прокси | (по умолчанию) | только через прокси. С любого интерфейса напрямую нельзя, даже через VPN |
-| Прокси или VPN | `--allow-tunnels` | через прокси и через VPN-интерфейсы (`utun*`, `ipsec*`, `ppp*`, `wg*`…). VPN отключился → блок |
+| Прокси или VPN | `--allow-tunnels` | через прокси и через VPN-интерфейсы (`utun*`, `tun*`, `tap*`, `ipsec*`, `ppp*`, `wg*`). VPN отключился → блок |
 
 Если Claude ходит через системный VPN (например, AmneziaWG), нужен `--allow-tunnels`. Без него прямой трафик в VPN тоже режется, и работает только путь через прокси.
 
 ## Установка
 
-> **Во время `install` текущие соединения Claude к Anthropic рвутся** (pf сбрасывает их, чтобы старые не продолжали идти напрямую). С `--allow-tunnels` и включённым VPN Claude сам переподключится. Без этого флага перезапусти его через «Claude via Proxy».
+Файлы лежат в [Releases](https://github.com/VitalyDubovets/claudeguard/releases). Терминал не нужен: установщик сам спросит пароль администратора, поставит всё и откроет панель, где выбирается сервер.
+
+> **Во время установки текущие соединения Claude к Anthropic рвутся** (иначе старые продолжали бы идти напрямую). В режиме «Пускать через VPN» с включённым VPN Claude переподключится сам, иначе перезапусти его через «Claude via Proxy».
+
+| Система | Файл | Что делать |
+|---|---|---|
+| macOS (Apple silicon и Intel) | `Claudeguard-X.Y.Z.dmg` | открыть, перетащить Claudeguard в «Программы», запустить |
+| Windows 10/11 | `ClaudeguardSetup-X.Y.Z-amd64.exe` (или `-arm64`) | двойной щелчок |
+| Ubuntu, Debian | `claudeguard_X.Y.Z_amd64.deb` | `sudo apt install ./claudeguard_*.deb`, затем «Claudeguard» в меню приложений |
+| Fedora | `claudeguard-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./claudeguard-*.rpm`, затем «Claudeguard» в меню |
+| Arch, Manjaro | `claudeguard-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U claudeguard-*.pkg.tar.zst`, затем «Claudeguard» в меню |
+| SteamOS и остальные | `claudeguard_X.Y.Z_linux_amd64.tar.gz` | распаковать, `./claudeguard install` |
+
+Для ARM-машин на Linux есть те же пакеты с `arm64` / `aarch64` в имени.
+
+Удаление: «Удалить Claudeguard…» внизу панели (на Windows ещё и в «Приложения и возможности»). Сначала снимается kill switch; если отменить запрос пароля, ничего не меняется.
 
 ### macOS
 
+При первом запуске Claudeguard.app спрашивает пароль администратора в системном окне и ставит:
+
+- копию программы и правила pf в `/Library/Application Support/claudeguard` (каталог доступен на запись только root) и LaunchDaemon `com.claudeguard.firewall`;
+- прокси как LaunchAgent `com.claudeguard.proxy`, лог в `~/Library/Logs/claudeguard.log`;
+- «Claude via Proxy.app» в `~/Applications` (запускай Claude через него);
+- значок в строке меню (LaunchAgent `com.claudeguard.tray`);
+- команду `claudeguard` для терминала (ссылка в `/usr/local/bin`).
+
+Потом тот же Claudeguard.app просто открывает панель. Новая версия ставится так же: заменить приложение в «Программах» и запустить.
+
+Приложение не подписано сертификатом Apple (нужен платный Developer ID), поэтому при первом запуске macOS скажет, что не может проверить разработчика. Открой «Системные настройки → Конфиденциальность и безопасность» и нажми «Всё равно открыть». Если Developer ID есть, `SIGN_ID="Developer ID Application: …" ./build.sh` подпишет приложение им.
+
+### Windows
+
+`ClaudeguardSetup` спрашивает подтверждение, показывает запрос UAC и ставит:
+
+- программу в `%LOCALAPPDATA%\claudeguard`, прокси стартует при входе в систему (ключ `HKCU\...\Run`);
+- ярлыки «Claude via Proxy» и «Claudeguard» на рабочем столе и в меню «Пуск», значок в области уведомлений;
+- запись в «Приложения и возможности» для удаления.
+
+Файл не подписан, SmartScreen предупредит: «Подробнее» → «Выполнить в любом случае».
+
+- SSH-серверы используют встроенный OpenSSH (`ssh.exe`, есть в Windows 10/11).
+- Режим «Пускать через VPN» на Windows вешает блок только на физические адаптеры (`Get-NetAdapter -Physical`), так что Wintun/TAP (WireGuard, AmneziaWG, OpenVPN) остаются разрешены. Адаптер, подключённый позже (USB-модем, новая сетевая карта), не покрыт, пока не нажмёшь «Применить» в панели ещё раз.
+- Нужен включённый Windows Firewall. Если его заменил сторонний файрвол, правило не действует.
+
+### Linux
+
+Пакет кладёт `/usr/bin/claudeguard`, пункт меню и значок. Сама защита включается при первом запуске «Claudeguard» из меню (или `claudeguard install` в терминале): пароль спросит polkit или sudo.
+
+- Kill switch: юниты `claudeguard-firewall.service` и `.timer` в `/etc/systemd/system`.
+- Прокси: пользовательский юнит `claudeguard.service` (`systemctl --user`), лог в `journalctl --user -u claudeguard`.
+- Claude Code: `HTTPS_PROXY` и `HTTP_PROXY` в `~/.claude/settings.json`.
+- Значок в трее запускается при входе (`~/.config/autostart`). Нужен трей с поддержкой StatusNotifier: в KDE он есть, в GNOME нужно расширение AppIndicator (в Ubuntu включено).
+- Официального десктоп-приложения Claude для Linux нет. Если стоит неофициальная сборка (`claude-desktop` в PATH), в меню появится «Claude via Proxy».
+- Нужны systemd и `nftables` либо `iptables`; пакеты тянут `nftables` сами.
+
+**SteamOS.** Системный раздел там только для чтения, пакеты pacman не переживают обновление. Поэтому ставь из архива в режиме рабочего стола:
+
 ```bash
-chmod +x claudeguard-darwin-arm64
-./claudeguard-darwin-arm64 install --ssh vd-poland --allow-tunnels
+tar xzf claudeguard_*_linux_amd64.tar.gz
+./claudeguard install
+```
+
+Программа копируется в `/opt/claudeguard`, юниты — в `/etc/systemd/system`; оба места на SteamOS переживают обновления системы. Для sudo на Steam Deck сначала нужен пароль пользователя (`passwd`).
+
+**Перед удалением пакета** выполни `claudeguard uninstall` (или «Удалить Claudeguard…» в панели): удаление пакета снимает kill switch и системные юниты, но не трогает настройки в домашнем каталоге.
+
+### Установка из терминала
+
+Работает на всех системах и принимает параметры:
+
+```bash
+claudeguard install --ssh vd-poland --allow-tunnels
 ```
 
 `--ssh HOST` добавляет сервер и делает его активным. Для SSH-сервера claudeguard сам держит `ssh -N -D 127.0.0.1:<свободный порт> HOST`: поднимает при старте и перезапускает после сна, смены сети или обрыва. Нужен вход по ключу без интерактивного пароля (`BatchMode=yes`). Ключ хоста должен быть подтверждён: либо он уже есть в `known_hosts`, либо его подтверждают в панели (см. ниже). Туннель всегда идёт с `StrictHostKeyChecking=yes`, что бы ни стояло в `~/.ssh/config`. Если прокси уже есть, вместо `--ssh` укажи `--upstream socks5://host:port` или `--upstream http://host:port`. Можно не указывать ничего и добавить серверы потом в панели.
-
-Один раз спросит пароль администратора: через sudo ставятся `/usr/local/bin/claudeguard`, LaunchDaemon и правила pf. Дальше:
-
-- прокси работает как LaunchAgent `com.claudeguard.proxy`, лог в `~/Library/Logs/claudeguard.log`;
-- в `~/Applications` появляются «Claude via Proxy.app» (запускай Claude через него) и «Claudeguard.app» (панель настроек);
-- в строке меню появляется значок Claudeguard (LaunchAgent `com.claudeguard.tray`). Не нужен — ставь с `--no-tray`.
-
-Бинарник из Releases не подписан сертификатом Apple. Если macOS не даёт его запустить, сними карантин: `xattr -d com.apple.quarantine claudeguard-darwin-arm64`.
-
-### Windows (PowerShell, без прав администратора; UAC спросит сам)
-
-```powershell
-.\claudeguard-windows-amd64.exe install --ssh vd-poland --allow-tunnels
-```
-
-- Бинарник копируется в `%LOCALAPPDATA%\claudeguard`, прокси стартует при входе в систему (ключ `HKCU\...\Run`).
-- Ярлыки «Claude via Proxy» и «Claudeguard» (панель настроек) появляются на рабочем столе и в меню «Пуск», значок Claudeguard — в области уведомлений.
-- SmartScreen может предупредить о неподписанном файле: «Подробнее» → «Выполнить в любом случае».
-- `--ssh` использует встроенный OpenSSH (`ssh.exe`, есть в Windows 10/11). Ключ должен лежать в `%USERPROFILE%\.ssh`.
-- `--allow-tunnels` на Windows вешает блок только на физические адаптеры (`Get-NetAdapter -Physical`), так что Wintun/TAP (WireGuard, AmneziaWG, OpenVPN) остаются разрешены. Адаптер, подключённый позже (USB-модем, новая сетевая карта), не покрыт, пока не выполнишь `claudeguard enable --allow-tunnels` ещё раз.
-- Нужен включённый Windows Firewall. Если его заменил сторонний файрвол, правило не действует, и `install` об этом предупредит.
 
 ## Панель настроек
 
@@ -144,6 +190,7 @@ curl -x http://127.0.0.1:41080 https://api.anthropic.com   # ошибка 502, �
 ## Команды
 
 ```
+app                      то, что делает двойной щелчок: установить, если нужно, и открыть панель
 install / uninstall      всё сразу / всё убрать
 ui                       панель настроек в браузере
 tray                     значок в строке меню / области уведомлений
@@ -165,10 +212,12 @@ enable / disable         только правила файрвола (admin)
 - **Основной процесс Electron** (Node-запросы десктопа, не Chromium) флаг `--proxy-server` может не учитывать. В режиме `--allow-tunnels` такие запросы идут через VPN, в режиме «только прокси» блокируются, и часть функций десктопа может не работать без VPN.
 - Что вкладка Code в десктопе читает `env` из `~/.claude/settings.json`, не проверено. Kill switch её в любом случае страхует.
 - **Claude Cowork** исполняет задачи в отдельной виртуальной машине. Говорят, что через прокси он не работает; здесь это не проверялось. Ожидаемо: в режиме «только прокси» Cowork останется без сети, с «Пускать через VPN» и включённым VPN должен работать. Покрывает ли kill switch трафик из его ВМ, тоже не проверено.
-- **Windows** собран и проверен только кросс-компиляцией и unit-тестами. На живой Windows-машине не запускался, в том числе значок в трее и мастер настройки сервера.
+- **Windows** собран и проверен только кросс-компиляцией и unit-тестами. На живой Windows-машине не запускался, в том числе установщик, удаление, значок в трее и мастер настройки сервера.
 - **Windows с `--allow-tunnels`:** список физических адаптеров фиксируется при установке. Новый адаптер и `vEthernet` от Hyper-V/WSL правилом не покрыты.
 - **Значок в строке меню** на macOS запускался и работал с API, но глазами в строке меню не проверен.
-- **`/usr/local/bin`.** Демон kill switch запускает `/usr/local/bin/claudeguard` от root. На Mac, где этот каталог доступен на запись обычному пользователю (так бывает с Homebrew на Intel), любая программа пользователя может подменить бинарник. Проверь: `ls -ld /usr/local/bin` должен показывать `root wheel` и `drwxr-xr-x`.
+- **Установщики для macOS и Windows** (Claudeguard.app, ClaudeguardSetup.exe) собраны, но двойным щелчком не запускались: проверены сборка, подпись и структура, а окна установки и запрос пароля — нет.
+- **Linux** проверен в виртуальных машинах Ubuntu, Fedora и Arch без рабочего стола: установка из пакетов и из архива, kill switch (nftables и iptables), SSH-туннель, восстановление правил таймером, удаление. Не проверены: запуск из меню приложений, окно пароля polkit, значок в трее, SteamOS на настоящем устройстве.
+- **Linux, «Применить» и удаление из панели** вызывают `pkexec` из фоновой службы. Если окно пароля не появится, панель покажет команду для терминала.
 - **Проверка защиты** в панели и `claudeguard status` сами пробуют соединиться с Anthropic напрямую. Пока kill switch не установлен, такая проба доходит до Anthropic с твоего настоящего адреса (TCP-соединение без запроса).
 - **`uninstall`** не удаляет ключ Claudeguard с серверов (`~/.ssh/authorized_keys`, строка с пометкой `claudeguard`) и файлы `id_ed25519`, `known_hosts` рядом с конфигом.
 - **Кнопка «Применить»** на macOS проверена только до вызова: диалог пароля и переустановка правил pf на этом Mac не запускались. Переключение серверов, проверки и туннели проверены вживую.
@@ -186,12 +235,11 @@ enable / disable         только правила файрвола (admin)
 
 ```bash
 go test ./...
-GOOS=windows GOARCH=amd64 go build -o dist/claudeguard-windows-amd64.exe .
-CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o dist/claudeguard-darwin-arm64 .
+./build.sh                # все установщики и пакеты в dist/
 go run ./tools/mkicon     # перерисовать значки в icons/
 ```
 
-Сборка под macOS идёт на Mac с Xcode Command Line Tools: значку в строке меню нужен cgo. Под Windows cgo не нужен.
+`build.sh` запускается на Mac с Xcode Command Line Tools: значку в строке меню нужен cgo, а `.dmg` собирает `hdiutil`. Windows и Linux собираются без cgo. Пакеты `.deb`, `.rpm` и Arch делает [nfpm](https://nfpm.goreleaser.com/), значок в `.exe` вшивает `rsrc`; оба скачиваются через `go run`.
 
 Панель (`ui/`) встраивается в бинарник через `go:embed`, отдельно ничего ставить не нужно. Готовые бинарники лежат в Releases.
 

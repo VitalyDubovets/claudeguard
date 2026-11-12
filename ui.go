@@ -268,6 +268,9 @@ func (h *uiHandler) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "name": p.Name, "test": h.m.testProfile(tctx, p.Name)})
 	case "POST /api/launch":
 		h.reply(w, launchApp(h.m.config(), ""))
+	case "POST /api/uninstall":
+		// A separate process: removing claudeguard stops this one.
+		h.reply(w, detachServe([]string{"uninstall", "--gui"}))
 	default:
 		jsonError(w, http.StatusNotFound, "нет такого метода")
 	}

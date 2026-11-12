@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Claudeguard
+Comment=Прокси и kill switch для Claude
+Exec=/usr/bin/claudeguard app
+Icon=claudeguard
+Terminal=false
+Categories=Network;

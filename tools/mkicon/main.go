@@ -231,7 +231,16 @@ func main() {
 		for _, s := range []int{16, 32, 48, 64, 128, 256, 512, 1024} {
 			pngs[s] = pngBytes(render(t, s))
 		}
-		for file, data := range map[string][]byte{name + ".icns": icns(pngs), name + ".ico": ico(pngs), name + ".png": pngs[256]} {
+		files := map[string][]byte{name + ".icns": icns(pngs), name + ".ico": ico(pngs), name + ".png": pngs[256]}
+		// The Linux tray takes plain PNGs; the grey plate exists only as a
+		// tray icon.
+		switch name {
+		case "claudeguard":
+			files["tray.png"] = pngs[64]
+		case "tray-off":
+			files = map[string][]byte{name + ".ico": ico(pngs), name + ".png": pngs[64]}
+		}
+		for file, data := range files {
 			if err := os.WriteFile(filepath.Join(dir, file), data, 0o644); err != nil {
 				log.Fatal(err)
 			}

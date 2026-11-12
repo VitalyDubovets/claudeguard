@@ -1,0 +1,32 @@
+# Filled in by build.sh: @ARCH@ and @VERSION@.
+name: claudeguard
+arch: "@ARCH@"
+platform: linux
+version: "@VERSION@"
+section: net
+priority: optional
+maintainer: VitalyDubovets <VitalyDubovets@users.noreply.github.com>
+description: |
+  Proxy and kill switch for Claude.
+  Routes the Claude desktop app and Claude Code through your proxy server and
+  blocks every direct connection to Anthropic in the firewall.
+homepage: https://github.com/VitalyDubovets/claudeguard
+license: Proprietary
+contents:
+  - src: dist/claudeguard-linux-@ARCH@
+    dst: /usr/bin/claudeguard
+    file_info:
+      mode: 0755
+  - src: packaging/claudeguard.desktop
+    dst: /usr/share/applications/claudeguard.desktop
+  - src: icons/claudeguard.png
+    dst: /usr/share/icons/hicolor/256x256/apps/claudeguard.png
+scripts:
+  preremove: packaging/preremove.sh
+overrides:
+  deb:
+    depends: [nftables, openssh-client, iproute2]
+  rpm:
+    depends: [nftables, openssh-clients, iproute]
+  archlinux:
+    depends: [nftables, openssh, iproute2]

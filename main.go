@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 const usageText = `claudeguard %s: proxy + kill switch for Claude
 
@@ -32,6 +32,8 @@ Usage:
   claudeguard install [--ssh HOST | --upstream URL] [--listen ADDR] [--allow-tunnels]
                       [--extra-block CIDRS] [--no-settings] [--no-launcher] [--no-tray]
       Set everything up. Asks for the admin password once (firewall rules).
+  claudeguard app                Install if needed, then open the settings page
+                                 (what a double click on the app does)
   claudeguard ui                 Open the settings page (servers, kill switch)
   claudeguard tray               Menu bar / tray icon: status and server switch
   claudeguard uninstall          Remove rules, background proxy, launchers, settings
@@ -50,6 +52,13 @@ func usage() { fmt.Fprintf(os.Stderr, usageText, version) }
 
 func main() {
 	if len(os.Args) < 2 {
+		// A double click on the app or the installer passes no arguments.
+		if launchedFromGUI() {
+			if cmdApp() != nil {
+				os.Exit(1)
+			}
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
@@ -64,6 +73,8 @@ func main() {
 		err = cmdStatus(args)
 	case "launch":
 		err = cmdLaunch(args)
+	case "app":
+		err = cmdApp()
 	case "ui":
 		err = cmdUI(args)
 	case "tray":
@@ -147,24 +158,8 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
-	fmt.Println("1/3 Firewall kill switch (needs admin rights)...")
-	if err := elevate(append([]string{"system-install"}, fw.args()...)); err != nil {
-		return fmt.Errorf("system part failed: %w", err)
-	}
-	fmt.Println("2/3 Background proxy, launcher...")
-	if err := userInstall(cfg, !*noLauncher); err != nil {
+	if err := doInstall(cfg, fw, installOptions{launcher: !*noLauncher, tray: !*noTray, settings: !*noSettings}, elevate); err != nil {
 		return err
-	}
-	if !*noTray {
-		if err := trayInstall(); err != nil {
-			fmt.Println("   tray icon not installed:", err)
-		}
-	}
-	if !*noSettings {
-		fmt.Println("3/3 Claude Code settings (env HTTPS_PROXY/HTTP_PROXY)...")
-		if err := configureClaudeCode(cfg.proxyURL(), true); err != nil {
-			return fmt.Errorf("~/.claude/settings.json: %w", err)
-		}
 	}
 	fmt.Println("\nDone. Restart Claude with the 'Claude via Proxy' launcher (or `claudeguard launch`).")
 	if cfg.Active == "" {
@@ -174,26 +169,41 @@ func cmdInstall(args []string) error {
 	return nil
 }
 
+// cmdUninstall removes the root half first: if the password prompt is
+// cancelled, nothing else has been touched and the protection stays whole.
 func cmdUninstall(args []string) error {
 	if isRoot() {
 		return errors.New("run uninstall as your normal user")
 	}
+	gui := len(args) == 1 && args[0] == "--gui"
+	elev := elevate
+	if gui {
+		hideConsole()
+		elev = elevateGUI
+	}
 	cfg, _ := loadConfig()
+	if err := elev([]string{"system-uninstall"}); err != nil {
+		err = fmt.Errorf("kill switch was not removed, nothing else was touched: %w", err)
+		if gui {
+			dialog("error", "Claudeguard не удалён: "+err.Error())
+		}
+		return err
+	}
 	var errs []error
 	if err := configureClaudeCode(cfg.proxyURL(), false); err != nil {
-		errs = append(errs, err)
-	}
-	if err := userUninstall(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := elevate([]string{"system-uninstall"}); err != nil {
 		errs = append(errs, err)
 	}
 	if p, err := configPath(); err == nil {
 		_ = os.Remove(p)
 	}
+	if err := userUninstall(); err != nil {
+		errs = append(errs, err)
+	}
 	if len(errs) == 0 {
 		fmt.Println("Removed. Restart Claude normally to go direct again.")
+		if gui {
+			dialog("info", "Claudeguard удалён. Перезапустите Claude обычным способом, чтобы он снова ходил напрямую.")
+		}
 	}
 	return errors.Join(errs...)
 }

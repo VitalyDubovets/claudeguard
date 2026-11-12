@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 )
 
 const (
@@ -18,6 +19,8 @@ const (
 	trayRunValue = "claudeguard-tray"
 	shortcutName = "Claude via Proxy.lnk"
 	uiShortcut   = "Claudeguard.lnk"
+	// The entry in "Apps & features".
+	uninstallKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Claudeguard`
 )
 
 // elevateGUI is the same UAC prompt without console windows, for the
@@ -190,6 +193,17 @@ foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFold
 		}
 		fmt.Println("   shortcuts 'Claude via Proxy' and 'Claudeguard' added to the Desktop and Start menu")
 	}
+	for _, v := range [][3]string{
+		{"DisplayName", "REG_SZ", "Claudeguard"},
+		{"DisplayVersion", "REG_SZ", version},
+		{"DisplayIcon", "REG_SZ", installedExe()},
+		{"InstallLocation", "REG_SZ", installDir()},
+		{"UninstallString", "REG_SZ", fmt.Sprintf(`"%s" uninstall --gui`, installedExe())},
+		{"NoModify", "REG_DWORD", "1"},
+		{"NoRepair", "REG_DWORD", "1"},
+	} {
+		_ = exec.Command("reg", "add", uninstallKey, "/v", v[0], "/t", v[1], "/d", v[2], "/f").Run()
+	}
 	return nil
 }
 
@@ -213,7 +227,20 @@ func userUninstall() error {
 	_, _ = powershell(fmt.Sprintf(`foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
   Remove-Item -ErrorAction SilentlyContinue (Join-Path $d %s), (Join-Path $d %s)
 }`, psQuote(shortcutName), psQuote(uiShortcut)))
-	fmt.Println("   you can delete", installDir(), "after this command exits")
+	_ = exec.Command("reg", "delete", uninstallKey, "/f").Run()
+	// A running program cannot delete its own file: leave that to a command
+	// that outlives this process by a few seconds.
+	if dir := installDir(); filepath.IsAbs(dir) {
+		cmd := exec.Command("cmd.exe")
+		const createNoWindow = 0x08000000
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			CmdLine:       `cmd.exe /d /c ping -n 4 127.0.0.1 >nul & rmdir /s /q "` + dir + `"`,
+			HideWindow:    true,
+			CreationFlags: createNoWindow,
+		}
+		cmd.Dir = os.TempDir()
+		_ = cmd.Start()
+	}
 	return nil
 }
 
@@ -270,4 +297,50 @@ func launchApp(cfg Config, app string) error {
 func hideChildWindow(cmd *exec.Cmd) {
 	const createNoWindow = 0x08000000
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+}
+
+var (
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+)
+
+// launchedFromGUI: a double click in Explorer gives the program a console of
+// its own; started from a shell, it shares the shell's.
+func launchedFromGUI() bool {
+	var pids [2]uint32
+	n, _, _ := kernel32.NewProc("GetConsoleProcessList").Call(uintptr(unsafe.Pointer(&pids[0])), 2)
+	return n == 1
+}
+
+// hideConsole closes that console window: the dialogs are the interface.
+func hideConsole() {
+	if launchedFromGUI() {
+		kernel32.NewProc("FreeConsole").Call()
+	}
+}
+
+func misplaced() string { return "" }
+
+// installed reports whether both halves are in place and run this binary.
+func installed() bool {
+	exe, _ := os.Executable()
+	return sameFile(exe, installedExe()) && firewallStatus() == "active"
+}
+
+func dialog(kind, text string) bool {
+	const (
+		mbOKCancel, mbIconError, mbIconQuestion, mbIconInfo = 0x1, 0x10, 0x20, 0x40
+		mbSetForeground, idOK                               = 0x10000, 1
+	)
+	flags := uintptr(mbIconInfo)
+	switch kind {
+	case "ask":
+		flags = mbOKCancel | mbIconQuestion
+	case "error":
+		flags = mbIconError
+	}
+	t, _ := syscall.UTF16PtrFromString(text)
+	title, _ := syscall.UTF16PtrFromString("Claudeguard")
+	r, _, _ := user32.NewProc("MessageBoxW").Call(0, uintptr(unsafe.Pointer(t)), uintptr(unsafe.Pointer(title)), flags|mbSetForeground)
+	return r == idOK
 }
