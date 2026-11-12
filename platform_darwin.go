@@ -91,6 +91,7 @@ var systemTools = map[string]string{
 	"osascript": "/usr/bin/osascript", "osacompile": "/usr/bin/osacompile",
 	"codesign": "/usr/bin/codesign", "open": "/usr/bin/open", "touch": "/usr/bin/touch", "pgrep": "/usr/bin/pgrep",
 	"defaults": "/usr/bin/defaults",
+	"pkill":    "/usr/bin/pkill",
 }
 
 func run(name string, args ...string) (string, error) {
@@ -434,7 +435,11 @@ func userUninstall() (notes []string, err error) {
 	return notes, nil
 }
 
-func stopProxy() {}
+// stopProxy ends a proxy that launchd does not know about: one the app
+// started on its own outlives the bootout of the agent.
+func stopProxy() {
+	_, _ = run("pkill", "-u", strconv.Itoa(os.Getuid()), "-f", "/claudeguard serve( |$)")
+}
 
 func detachServe(args []string) error {
 	exe, err := os.Executable()
