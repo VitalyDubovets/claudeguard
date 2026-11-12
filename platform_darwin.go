@@ -1,0 +1,380 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+const (
+	binPath      = "/usr/local/bin/claudeguard"
+	stateDir     = "/Library/Application Support/claudeguard"
+	tokenFile    = stateDir + "/pf.token"
+	rulesFile    = stateDir + "/rules.pf"
+	daemonLabel  = "com.claudeguard.firewall"
+	daemonPlist  = "/Library/LaunchDaemons/" + daemonLabel + ".plist"
+	agentLabel   = "com.claudeguard.proxy"
+	launcherName = "Claude via Proxy.app"
+	uiAppName    = "Claudeguard.app"
+	defaultApp   = "/Applications/Claude.app"
+)
+
+func isRoot() bool { return os.Geteuid() == 0 }
+
+func elevate(args []string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("sudo", append([]string{exe}, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// elevateGUI asks for the admin password in a system dialog; the settings
+// page runs in a background process that has no terminal for sudo.
+func elevateGUI(args []string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	quoted := make([]string, 0, len(args)+1)
+	for _, a := range append([]string{exe}, args...) {
+		quoted = append(quoted, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
+	}
+	shell := strings.Join(quoted, " ")
+	lit := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(shell)
+	out, err := exec.Command("osascript", "-e",
+		`do shell script "`+lit+`" with prompt "Claudeguard хочет обновить правила kill switch." with administrator privileges`).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if strings.Contains(msg, "-128") {
+			return errors.New("отменено")
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+func openBrowser(url string) error { return exec.Command("open", url).Run() }
+
+func run(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out)
+	}
+	return string(out), nil
+}
+
+// tunnelInterfaces lists VPN interfaces that are up right now. The daemon
+// re-runs `enable` periodically, so a VPN that connects later gets picked up
+// (until then its traffic to Anthropic is blocked, i.e. we fail closed).
+func tunnelInterfaces() []string {
+	ifs, _ := net.Interfaces()
+	var out []string
+	for _, i := range ifs {
+		if i.Flags&net.FlagUp == 0 {
+			continue
+		}
+		for _, p := range []string{"utun", "ipsec", "ppp", "tun", "tap", "wg"} {
+			if strings.HasPrefix(i.Name, p) {
+				out = append(out, i.Name)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func enableFirewall(o FirewallOptions) error {
+	var tunnels []string
+	if o.AllowTunnels {
+		tunnels = tunnelInterfaces()
+	}
+	rules := renderPFRules(o.ranges(), tunnels)
+	// The daemon calls this every few seconds; reload (and drop live
+	// connections) only when the rules actually change, e.g. a VPN went down.
+	loaded, _ := run("pfctl", "-a", pfAnchor, "-s", "rules")
+	if prev, err := os.ReadFile(rulesFile); err == nil && string(prev) == rules && strings.Contains(loaded, "<claudeguard>") {
+		return ensurePFEnabled()
+	}
+	f, err := os.CreateTemp("", "claudeguard-*.pf")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := io.WriteString(f, rules); err != nil {
+		return err
+	}
+	f.Close()
+	// Anchors under com.apple/* are already referenced by the stock
+	// /etc/pf.conf, so nothing in system files needs editing.
+	if _, err := run("pfctl", "-a", pfAnchor, "-f", f.Name()); err != nil {
+		return err
+	}
+	if err := ensurePFEnabled(); err != nil {
+		return err
+	}
+	_ = os.MkdirAll(stateDir, 0o755)
+	_ = os.WriteFile(rulesFile, []byte(rules), 0o644)
+	// Drop connections to Anthropic that were open before the rules.
+	for _, r := range o.ranges() {
+		any := "0.0.0.0/0"
+		if strings.Contains(r, ":") {
+			any = "::/0"
+		}
+		_, _ = run("pfctl", "-k", any, "-k", r)
+	}
+	return nil
+}
+
+var tokenRe = regexp.MustCompile(`Token\s*:\s*(\d+)`)
+
+// ensurePFEnabled holds our own pf enable reference, so pf stays on even if
+// another app that enabled it releases its reference.
+func ensurePFEnabled() error {
+	info, _ := run("pfctl", "-s", "info")
+	saved, _ := os.ReadFile(tokenFile)
+	token := strings.TrimSpace(string(saved))
+	if token != "" && strings.Contains(info, "Status: Enabled") {
+		refs, err := run("pfctl", "-s", "References")
+		if err != nil || strings.Contains(refs, token) {
+			return nil
+		}
+	}
+	out, err := run("pfctl", "-E")
+	if err != nil {
+		return err
+	}
+	if m := tokenRe.FindStringSubmatch(out); m != nil {
+		_ = os.MkdirAll(stateDir, 0o755)
+		return os.WriteFile(tokenFile, []byte(m[1]+"\n"), 0o600)
+	}
+	return nil
+}
+
+func disableFirewall() error {
+	if _, err := run("pfctl", "-a", pfAnchor, "-F", "all"); err != nil {
+		return err
+	}
+	if saved, err := os.ReadFile(tokenFile); err == nil {
+		if t := strings.TrimSpace(string(saved)); t != "" {
+			_, _ = run("pfctl", "-X", t)
+		}
+		_ = os.Remove(tokenFile)
+	}
+	return nil
+}
+
+func firewallStatus() string {
+	if !isRoot() {
+		if _, err := os.Stat(daemonPlist); err != nil {
+			return "not installed"
+		}
+		return "installed (see direct checks below)"
+	}
+	out, _ := run("pfctl", "-a", pfAnchor, "-s", "rules")
+	if strings.Contains(out, "claudeguard") {
+		return "active"
+	}
+	return "NOT loaded"
+}
+
+func plist(label string, args []string, extra string) string {
+	var a strings.Builder
+	for _, s := range args {
+		fmt.Fprintf(&a, "\t\t<string>%s</string>\n", xmlEscape(s))
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>%s</string>
+	<key>ProgramArguments</key>
+	<array>
+%s	</array>
+	<key>RunAtLoad</key>
+	<true/>
+%s</dict>
+</plist>
+`, label, a.String(), extra)
+}
+
+func xmlEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	if src == dst {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".new"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+func systemInstall(o FirewallOptions) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		return err
+	}
+	if err := copyFile(exe, binPath, 0o755); err != nil {
+		return err
+	}
+	if err := enableFirewall(o); err != nil {
+		return err
+	}
+	// The daemon re-applies the rules at boot and every minute (every 15 s
+	// with --allow-tunnels, to follow VPN interfaces coming and going).
+	interval := 60
+	if o.AllowTunnels {
+		interval = 15
+	}
+	extra := fmt.Sprintf("\t<key>StartInterval</key>\n\t<integer>%d</integer>\n", interval)
+	p := plist(daemonLabel, append([]string{binPath, "enable"}, o.args()...), extra)
+	if err := os.WriteFile(daemonPlist, []byte(p), 0o644); err != nil {
+		return err
+	}
+	_, _ = run("launchctl", "bootout", "system/"+daemonLabel)
+	if _, err := run("launchctl", "bootstrap", "system", daemonPlist); err != nil {
+		return err
+	}
+	fmt.Println("   pf anchor", pfAnchor, "loaded; LaunchDaemon", daemonLabel, "installed")
+	return nil
+}
+
+func systemUninstall() error {
+	_, _ = run("launchctl", "bootout", "system/"+daemonLabel)
+	_ = os.Remove(daemonPlist)
+	err := disableFirewall()
+	_ = os.Remove(binPath)
+	_ = os.RemoveAll(stateDir)
+	return err
+}
+
+func agentPlistPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", agentLabel+".plist")
+}
+
+func launcherPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Applications", launcherName)
+}
+
+func uiAppPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Applications", uiAppName)
+}
+
+func userInstall(cfg Config, launcher bool) error {
+	home, _ := os.UserHomeDir()
+	logPath := filepath.Join(home, "Library", "Logs", "claudeguard.log")
+	extra := "\t<key>KeepAlive</key>\n\t<true/>\n" +
+		"\t<key>StandardOutPath</key>\n\t<string>" + xmlEscape(logPath) + "</string>\n" +
+		"\t<key>StandardErrorPath</key>\n\t<string>" + xmlEscape(logPath) + "</string>\n"
+	p := agentPlistPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, []byte(plist(agentLabel, []string{binPath, "serve"}, extra)), 0o644); err != nil {
+		return err
+	}
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	_, _ = run("launchctl", "bootout", domain+"/"+agentLabel)
+	if _, err := run("launchctl", "bootstrap", domain, p); err != nil {
+		return err
+	}
+	fmt.Println("   local proxy", cfg.proxyURL(), "runs as LaunchAgent", agentLabel, "(log:", logPath+")")
+
+	if launcher {
+		for _, l := range []struct{ path, cmd string }{
+			{launcherPath(), "launch"},
+			{uiAppPath(), "ui"},
+		} {
+			_ = os.MkdirAll(filepath.Dir(l.path), 0o755)
+			_ = os.RemoveAll(l.path)
+			script := fmt.Sprintf(`do shell script "%s %s > /dev/null 2>&1 &"`, binPath, l.cmd)
+			if _, err := run("osacompile", "-o", l.path, "-e", script); err != nil {
+				return err
+			}
+			fmt.Println("   launcher:", l.path)
+		}
+	}
+	return nil
+}
+
+func userUninstall() error {
+	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+agentLabel)
+	_ = os.Remove(agentPlistPath())
+	_ = os.RemoveAll(launcherPath())
+	_ = os.RemoveAll(uiAppPath())
+	return nil
+}
+
+func detachServe(args []string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
+}
+
+func claudeRunning() bool {
+	return exec.Command("pgrep", "-x", "Claude").Run() == nil
+}
+
+// launchApp restarts the desktop app with Chromium's --proxy-server switch.
+// Chromium never falls back to a direct connection when that proxy fails.
+func launchApp(cfg Config, app string) error {
+	if app == "" {
+		app = defaultApp
+	}
+	if _, err := os.Stat(app); err != nil {
+		return fmt.Errorf("Claude app not found at %s (use --app)", app)
+	}
+	if claudeRunning() {
+		fmt.Println("Quitting Claude...")
+		_, _ = run("osascript", "-e", `quit app "Claude"`)
+		for i := 0; i < 30 && claudeRunning(); i++ {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if claudeRunning() {
+			return errors.New("Claude is still running; quit it and try again")
+		}
+	}
+	_, err := run("open", "-a", app, "--args", "--proxy-server="+cfg.proxyURL())
+	return err
+}
+
+func hideChildWindow(*exec.Cmd) {}

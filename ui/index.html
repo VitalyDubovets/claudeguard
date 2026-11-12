@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Claudeguard</title>
+<link rel="stylesheet" href="/ui/app.css">
+<script src="/ui/app.js" defer></script>
+</head>
+<body>
+<main class="page">
+
+<header class="head">
+  <span class="appicon" aria-hidden="true">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 2.5 4 5.3v5.4c0 4.2 3 7.5 7 9 4-1.5 7-4.8 7-9V5.3l-7-2.8Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/><path d="m7.8 11 2.2 2.2 4.2-4.4" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </span>
+  <div>
+    <h1>Claudeguard</h1>
+    <p class="sub">Прокси и kill switch для Claude</p>
+  </div>
+</header>
+
+<section id="noauth" class="group pad" hidden>
+  <p class="title">Нет доступа к панели</p>
+  <p class="muted">Откройте её ярлыком Claudeguard или командой <code>claudeguard ui</code>: ссылка содержит ключ доступа.</p>
+</section>
+
+<div id="app" hidden>
+
+<section class="group" aria-live="polite">
+  <div class="status">
+    <span id="st-badge" class="badge" aria-hidden="true"></span>
+    <div class="status-body">
+      <p id="st-title" class="title"></p>
+      <p id="st-detail" class="muted2"></p>
+      <code id="st-error" class="errbox" hidden></code>
+      <div id="st-actions" class="actions"></div>
+    </div>
+  </div>
+  <div id="route" class="route" role="img"></div>
+</section>
+
+<section aria-labelledby="servers-h">
+  <div class="group-head">
+    <h2 id="servers-h">Серверы</h2>
+    <button id="test-all" class="textbtn" type="button">Проверить все</button>
+  </div>
+  <div class="group">
+    <ul id="servers" class="list"></ul>
+    <button id="add" class="row addrow" type="button">Добавить сервер…</button>
+  </div>
+  <p class="foot">Нажмите на сервер, чтобы пустить Claude через него. Переключение происходит сразу, без перезапуска Claude.</p>
+</section>
+
+<section aria-labelledby="ks-h">
+  <div class="group-head"><h2 id="ks-h">Защита</h2></div>
+  <div class="group">
+    <div class="row">
+      <svg class="rowicon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3.5" y="8.5" width="13" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 8.5V6.3a3.5 3.5 0 0 1 7 0v2.2" stroke="currentColor" stroke-width="1.5"/></svg>
+      <span class="grow"><span class="rowtitle">Kill switch</span><span id="ks-detail" class="muted small"></span></span>
+      <span id="ks-state" class="small strong"></span>
+    </div>
+    <div class="row">
+      <span class="grow">
+        <span class="rowtitle" id="tun-label">Пускать через VPN на этом компьютере</span>
+        <span class="muted small">Когда VPN включён, Claude может идти и через него. Без VPN всё по-прежнему только через сервер выше.</span>
+      </span>
+      <button id="tun" class="switch" type="button" role="switch" aria-checked="false" aria-labelledby="tun-label"><span></span></button>
+    </div>
+    <label class="row" for="extra">
+      <span class="grow">
+        <span class="rowtitle">Дополнительные сети</span>
+        <span class="muted small">Ещё адреса, куда Claude нельзя ходить напрямую. Через запятую, например 203.0.113.0/24.</span>
+      </span>
+      <input id="extra" class="field narrow" type="text" placeholder="Не заданы" spellcheck="false" autocomplete="off">
+    </label>
+    <div id="fw-bar" class="applybar" hidden>
+      <span id="fw-note" class="muted small"></span>
+      <span class="actions">
+        <button id="fw-cancel" class="btn" type="button">Отменить</button>
+        <button id="fw-apply" class="btn primary" type="button">Применить</button>
+      </span>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <span id="ver"></span>
+  <button id="recheck" class="textbtn" type="button">Проверить защиту</button>
+</footer>
+
+</div>
+</main>
+
+<dialog id="sheet" aria-labelledby="sheet-h">
+  <div class="sheet-body">
+    <h2 id="sheet-h">Новый сервер</h2>
+    <div class="seg" role="radiogroup" aria-label="Тип">
+      <button type="button" role="radio" data-kind="ssh">SSH-хост</button>
+      <button type="button" role="radio" data-kind="socks5">SOCKS5</button>
+      <button type="button" role="radio" data-kind="http">HTTP</button>
+    </div>
+    <div id="f-ssh" class="fieldset">
+      <label for="host">SSH-хост</label>
+      <input id="host" class="field" type="text" placeholder="vd-poland или user@1.2.3.4" spellcheck="false" autocomplete="off">
+      <span id="chips-label" class="muted small">Из ~/.ssh/config:</span>
+      <div id="chips" class="chips"></div>
+      <span class="muted small">Нужен вход по ключу без пароля: Claudeguard сам держит туннель ssh -D и переподключает его.</span>
+    </div>
+    <div id="f-proxy" class="fieldset" hidden>
+      <label for="addr">Адрес прокси</label>
+      <input id="addr" class="field mono" type="text" spellcheck="false" autocomplete="off">
+      <span id="addr-hint" class="muted small"></span>
+    </div>
+    <div class="fieldset">
+      <label for="pname">Название</label>
+      <input id="pname" class="field" type="text" placeholder="Как показывать в списке" autocomplete="off">
+    </div>
+    <p id="sheet-err" class="err small" role="alert" hidden></p>
+  </div>
+  <div class="sheet-actions">
+    <button id="sheet-del" class="btn danger" type="button" hidden>Удалить</button>
+    <span class="grow"></span>
+    <button id="sheet-cancel" class="btn" type="button">Отменить</button>
+    <button id="sheet-ok" class="btn primary" type="button">Добавить</button>
+  </div>
+</dialog>
+</body>
+</html>
