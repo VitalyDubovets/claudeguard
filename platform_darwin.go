@@ -90,6 +90,7 @@ var systemTools = map[string]string{
 	"pfctl": "/sbin/pfctl", "launchctl": "/bin/launchctl", "sudo": "/usr/bin/sudo",
 	"osascript": "/usr/bin/osascript", "osacompile": "/usr/bin/osacompile",
 	"codesign": "/usr/bin/codesign", "open": "/usr/bin/open", "touch": "/usr/bin/touch", "pgrep": "/usr/bin/pgrep",
+	"defaults": "/usr/bin/defaults",
 }
 
 func run(name string, args ...string) (string, error) {
@@ -403,15 +404,37 @@ func trayInstall() error {
 	return nil
 }
 
-func userUninstall() error {
+// userUninstall also clears what macOS keeps for the settings window and
+// moves the app itself to the Trash.
+func userUninstall() (notes []string, err error) {
 	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+agentLabel)
 	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+trayLabel)
 	_ = os.Remove(trayPlistPath())
 	_ = os.Remove(agentPlistPath())
 	_ = os.RemoveAll(launcherPath())
 	_ = os.RemoveAll(uiAppPath())
-	return nil
+	_ = os.Remove(filepath.Dir(uiAppPath())) // ~/Applications, if the install made it
+	if home, err := os.UserHomeDir(); err == nil {
+		lib := filepath.Join(home, "Library")
+		_ = os.Remove(filepath.Join(lib, "Logs", "claudeguard.log"))
+		// The window runs inside Claudeguard.app or as a bare binary.
+		for _, id := range []string{"com.claudeguard.app", "claudeguard"} {
+			for _, p := range []string{
+				"WebKit/" + id, "Caches/" + id, "HTTPStorages/" + id, "HTTPStorages/" + id + ".binarycookies",
+				"Cookies/" + id + ".binarycookies", "Saved Application State/" + id + ".savedState",
+			} {
+				_ = os.RemoveAll(filepath.Join(lib, filepath.FromSlash(p)))
+			}
+			_, _ = run("defaults", "delete", id)
+		}
+	}
+	if app := appBundle(); app != "" && !strings.HasPrefix(app, "/Volumes/") && !trash(app) {
+		notes = append(notes, "Осталось перетащить Claudeguard из папки «Программы» в Корзину.")
+	}
+	return notes, nil
 }
+
+func stopProxy() {}
 
 func detachServe(args []string) error {
 	exe, err := os.Executable()

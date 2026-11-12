@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "0.4.0"
+const version = "0.4.1"
 
 const usageText = `claudeguard %s: proxy + kill switch for Claude
 
@@ -32,11 +32,11 @@ Usage:
   claudeguard install [--ssh HOST | --upstream URL] [--listen ADDR] [--allow-tunnels]
                       [--extra-block CIDRS] [--no-settings] [--no-launcher] [--no-tray]
       Set everything up. Asks for the admin password once (firewall rules).
-  claudeguard app                Install if needed, then open the settings page
+  claudeguard app                Install if needed, then open the settings window
                                  (what a double click on the app does)
-  claudeguard ui                 Open the settings page (servers, kill switch)
+  claudeguard ui [--browser]     Open the settings window (servers, kill switch)
   claudeguard tray               Menu bar / tray icon: status and server switch
-  claudeguard uninstall          Remove rules, background proxy, launchers, settings
+  claudeguard uninstall          Remove everything and put Claude Code settings back
   claudeguard status             Check that the proxy works and direct access is blocked
   claudeguard launch [--app P]   (Re)start the Claude desktop app through the proxy
   claudeguard serve [--detach]   Run the local proxy and settings page
@@ -77,6 +77,8 @@ func main() {
 		err = cmdApp()
 	case "ui":
 		err = cmdUI(args)
+	case "window":
+		err = cmdWindow()
 	case "tray":
 		err = cmdTray(args)
 	case "serve":
@@ -190,21 +192,32 @@ func cmdUninstall(args []string) error {
 		return err
 	}
 	var errs []error
+	var notes []string
+	if left := forgetServerKeys(cfg); len(left) > 0 {
+		notes = append(notes, "Ключ Claudeguard остался на сервере "+strings.Join(left, ", ")+
+			": сервер не ответил. Строка с пометкой claudeguard в ~/.ssh/authorized_keys удаляется вручную.")
+	}
 	if err := configureClaudeCode(cfg.proxyURL(), false); err != nil {
+		errs = append(errs, fmt.Errorf("~/.claude/settings.json: %w", err))
+	}
+	closePanel()
+	more, err := userUninstall()
+	if err != nil {
 		errs = append(errs, err)
 	}
-	if p, err := configPath(); err == nil {
-		_ = os.Remove(p)
-	}
-	if err := userUninstall(); err != nil {
-		errs = append(errs, err)
-	}
+	notes = append(notes, more...)
+	removeAppData()
 	if len(errs) == 0 {
-		fmt.Println("Removed. Restart Claude normally to go direct again.")
+		text := "Claudeguard удалён, настройки Claude Code возвращены. Перезапустите Claude обычным способом, чтобы он снова ходил напрямую."
+		if len(notes) > 0 {
+			text += "\n\n" + strings.Join(notes, "\n\n")
+		}
+		fmt.Println(text)
 		if gui {
-			dialog("info", "Claudeguard удалён. Перезапустите Claude обычным способом, чтобы он снова ходил напрямую.")
+			dialog("info", text)
 		}
 	}
+	stopProxy()
 	return errors.Join(errs...)
 }
 
@@ -241,17 +254,22 @@ func cmdServe(args []string) error {
 	return runProxy(cfg.Listen, m)
 }
 
-// cmdUI opens the settings page, starting the proxy first if needed. The
-// access token rides in the URL fragment, which browsers never send.
-func cmdUI(args []string) error {
+// errNoWindow means this system has nothing to show the page in a window of
+// its own; the browser takes over.
+var errNoWindow = errors.New("no web view on this system")
+
+// panelURL returns the address of the settings page, starting the proxy
+// first if needed. The access token rides in the URL fragment, which is
+// never sent over the network.
+func panelURL() (string, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
 	id := proxyIdentity(cfg)
 	if strings.HasPrefix(id, "NOT") {
 		if err := detachServe([]string{"serve"}); err != nil {
-			return err
+			return "", err
 		}
 		for i := 0; i < 50 && !proxyListening(cfg.Listen); i++ {
 			time.Sleep(100 * time.Millisecond)
@@ -259,21 +277,61 @@ func cmdUI(args []string) error {
 		id = proxyIdentity(cfg)
 	}
 	if !strings.HasPrefix(id, "running") {
-		return fmt.Errorf("local proxy %s: %s", cfg.Listen, id)
+		return "", fmt.Errorf("local proxy %s: %s", cfg.Listen, id)
 	}
-	url := "http://" + cfg.Listen + "/ui#token=" + cfg.Token
-	// The key must not show up in `ps` as an argument of the browser's
-	// opener, so the browser gets a private file that redirects to the page.
+	return "http://" + cfg.Listen + "/ui#token=" + cfg.Token, nil
+}
+
+// redirectPage writes a private file that sends a browser to url. The key
+// must not show up in `ps` as an argument of whatever opens the page.
+func redirectPage(url string) (string, error) {
 	page, err := appSSHFile("open.html")
 	if err == nil {
 		err = os.WriteFile(page, []byte(`<!doctype html><meta charset="utf-8"><title>Claudeguard</title>`+
 			`<meta http-equiv="refresh" content="0;url=`+url+`"><a href="`+url+`">Открыть Claudeguard</a>`), 0o600)
 	}
+	return page, err
+}
+
+func openInBrowser(url string) error {
+	page, err := redirectPage(url)
 	if err == nil {
 		err = openBrowser(page)
 	}
 	if err != nil {
 		fmt.Println("Open this in a browser:", url)
+	}
+	return nil
+}
+
+// cmdUI opens the settings window and returns at once: the window lives in
+// a process of its own.
+func cmdUI(args []string) error {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	browser := fs.Bool("browser", false, "open the page in the browser instead of a window")
+	_ = fs.Parse(args)
+	if *browser {
+		url, err := panelURL()
+		if err != nil {
+			return err
+		}
+		return openInBrowser(url)
+	}
+	return openPanel()
+}
+
+// cmdWindow shows the settings page in a window and returns when the window
+// is closed.
+func cmdWindow() error {
+	url, err := panelURL()
+	if err != nil {
+		return err
+	}
+	if err := showWindow(url); err != nil {
+		if !errors.Is(err, errNoWindow) {
+			log.Println("window:", err)
+		}
+		return openInBrowser(url)
 	}
 	return nil
 }
@@ -407,8 +465,31 @@ func directProbe(network, host string) string {
 	if err != nil {
 		return "blocked/unreachable (" + shortErr(err) + ")"
 	}
+	via := ifaceOf(c.LocalAddr())
 	c.Close()
-	return "OPEN: direct connection to " + ips[0].String() + " succeeded"
+	if via != "" {
+		via = " via " + via
+	}
+	return "OPEN: direct connection to " + ips[0].String() + " succeeded" + via
+}
+
+// ifaceOf names the network interface that owns a local address: it tells a
+// VPN tunnel (utun5, wg0) from the plain network (en0, eth0).
+func ifaceOf(local net.Addr) string {
+	tcp, ok := local.(*net.TCPAddr)
+	if !ok {
+		return ""
+	}
+	ifs, _ := net.Interfaces()
+	for _, i := range ifs {
+		addrs, _ := i.Addrs()
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && n.IP.Equal(tcp.IP) {
+				return i.Name
+			}
+		}
+	}
+	return ""
 }
 
 func shortErr(err error) string {
@@ -449,7 +530,7 @@ func cmdStatus(args []string) error {
 	fmt.Printf("direct IPv6:     %s\n", v6)
 	if strings.HasPrefix(v4, "OPEN") || strings.HasPrefix(v6, "OPEN") {
 		if cfg.AllowTunnels {
-			fmt.Println("\nDirect access is open. Fine if a VPN tunnel is up right now (--allow-tunnels).")
+			fmt.Println("\nDirect access is open. Fine if the interface above is a VPN tunnel (--allow-tunnels lets those through).")
 		} else {
 			fmt.Println("\nKILL SWITCH IS NOT ACTIVE: Claude can bypass the proxy. Run `claudeguard enable`.")
 		}

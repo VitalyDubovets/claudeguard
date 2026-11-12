@@ -20,7 +20,9 @@ func systemInstall(FirewallOptions) error  { return errUnsupported }
 func systemUninstall() error               { return errUnsupported }
 func userInstall(Config, bool) error       { return errUnsupported }
 func trayInstall() error                   { return errUnsupported }
-func userUninstall() error                 { return errUnsupported }
+func userUninstall() ([]string, error)     { return nil, errUnsupported }
+func closePanel()                          {}
+func stopProxy()                           {}
 func detachServe([]string) error           { return errUnsupported }
 func launchApp(Config, string) error       { return errUnsupported }
 func elevateGUI([]string) error            { return errUnsupported }
@@ -29,6 +31,8 @@ func installed() bool                      { return false }
 func hideConsole()                         {}
 func misplaced() string                    { return "" }
 func dialog(string, string) bool           { return false }
+func showWindow(string) error              { return errNoWindow }
+func openPanel() error                     { return cmdWindow() }
 
 func openBrowser(url string) error { return exec.Command("xdg-open", url).Start() }
 

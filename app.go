@@ -56,7 +56,7 @@ func doInstall(cfg Config, fw FirewallOptions, o installOptions, elev func([]str
 }
 
 // cmdApp is what a double click runs: set everything up on the first start
-// and after an update, then open the settings page. There is no terminal
+// and after an update, then show the settings window. There is no terminal
 // here, so questions and errors are dialogs.
 func cmdApp() error {
 	hideConsole()
@@ -77,7 +77,7 @@ func cmdApp() error {
 		}
 	}
 	if err == nil {
-		err = cmdUI(nil)
+		err = cmdWindow()
 	}
 	if err != nil {
 		dialog("error", "Claudeguard: "+err.Error())

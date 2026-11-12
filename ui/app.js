@@ -22,6 +22,8 @@ try { theme = localStorage.getItem('cg-theme') || 'auto'; } catch (e) {}
 function applyTheme() {
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
   else delete document.documentElement.dataset.theme;
+  // In the app window the title bar follows the chosen theme.
+  try { window.webkit.messageHandlers.claudeguard.postMessage(theme); } catch (e) {}
 }
 applyTheme();
 
@@ -789,11 +791,11 @@ document.addEventListener('DOMContentLoaded', () => {
   $('test-all').addEventListener('click', () => state.profiles.forEach((p) => test(p.name)));
   $('recheck').addEventListener('click', () => { check = null; runCheck(); });
   $('uninstall').addEventListener('click', async () => {
-    if (!confirm('Удалить Claudeguard? Правила kill switch, фоновый прокси, значок и настройки прокси в Claude Code будут убраны: Claude снова пойдёт напрямую. Понадобится пароль администратора.')) return;
+    if (!confirm('Удалить Claudeguard? Kill switch, фоновый прокси, значок и сама программа будут убраны, настройки Claude Code вернутся к прежним, ключ Claudeguard будет снят с серверов, настроенных в панели. Claude снова пойдёт напрямую. Понадобится пароль администратора.')) return;
     try {
       await api('/api/uninstall', {});
       removed = true;
-      document.querySelector('main').replaceChildren(el('p', 'foot', 'Claudeguard удаляется: подтвердите действие паролем администратора в системном окне. Эту вкладку можно закрыть.'));
+      document.querySelector('main').replaceChildren(el('p', 'foot', 'Claudeguard удаляется: подтвердите действие паролем администратора в системном окне. Это окно закроется само.'));
     } catch (e) { alert(e.message); }
   });
   $('tun').addEventListener('click', () => editDraft({ allow: $('tun').getAttribute('aria-checked') !== 'true' }));

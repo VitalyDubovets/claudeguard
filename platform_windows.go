@@ -220,7 +220,7 @@ func trayInstall() error {
 	return nil
 }
 
-func userUninstall() error {
+func userUninstall() (notes []string, err error) {
 	_ = exec.Command("reg", "delete", runKey, "/v", runValue, "/f").Run()
 	_ = exec.Command("reg", "delete", runKey, "/v", trayRunValue, "/f").Run()
 	stopOtherInstances()
@@ -231,18 +231,29 @@ func userUninstall() error {
 	// A running program cannot delete its own file: leave that to a command
 	// that outlives this process by a few seconds.
 	if dir := installDir(); filepath.IsAbs(dir) {
+		line := `cmd.exe /d /c ping -n 4 127.0.0.1 >nul & rmdir /s /q "` + dir + `"`
+		// The web view lets go of its files a moment after the window dies.
+		if data, err := appSSHFile("webview"); err == nil {
+			line += ` & rmdir /s /q "` + data + `" & rmdir "` + filepath.Dir(data) + `"`
+		}
 		cmd := exec.Command("cmd.exe")
 		const createNoWindow = 0x08000000
 		cmd.SysProcAttr = &syscall.SysProcAttr{
-			CmdLine:       `cmd.exe /d /c ping -n 4 127.0.0.1 >nul & rmdir /s /q "` + dir + `"`,
+			CmdLine:       line,
 			HideWindow:    true,
 			CreationFlags: createNoWindow,
 		}
 		cmd.Dir = os.TempDir()
 		_ = cmd.Start()
 	}
-	return nil
+	return nil, nil
 }
+
+// closePanel has nothing to do: userUninstall stops every claudeguard
+// process, the window among them.
+func closePanel() {}
+
+func stopProxy() {}
 
 func detachServe(args []string) error {
 	exe, err := os.Executable()

@@ -401,6 +401,71 @@ func ensureAppKey() (ssh.PublicKey, error) {
 // newline so the key never glues onto the previous line.
 const installKeyScript = `sh -c 'umask 077; f="$HOME/.ssh/authorized_keys"; mkdir -p "$HOME/.ssh" && touch "$f" && IFS= read -r k && { grep -qxF "$k" "$f" || { [ -s "$f" ] && [ -n "$(tail -c1 "$f")" ] && echo >> "$f"; printf "%s\n" "$k" >> "$f"; }; }'`
 
+// removeKeyScript takes the key read from stdin out of authorized_keys again.
+// The file is rewritten in place, so its owner, mode and links stay as they
+// were.
+const removeKeyScript = `sh -c 'f="$HOME/.ssh/authorized_keys"; [ -f "$f" ] && IFS= read -r k && [ -n "$k" ] || exit 0; umask 077; t="$f.claudeguard.$$"; grep -vxF -e "$k" "$f" > "$t"; [ $? -le 1 ] && cat "$t" > "$f"; r=$?; rm -f "$t"; exit $r'`
+
+// appKeyLine is the line a server set up in the panel has in authorized_keys.
+func appKeyLine(pub ssh.PublicKey) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " claudeguard\n"
+}
+
+// forgetServerKeys removes claudeguard's key from the servers that were set
+// up in the panel, before uninstall deletes the key itself. It returns the
+// servers it could not reach: there the line stays.
+func forgetServerKeys(cfg Config) (left []string) {
+	path, err := appKeyPath()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	signer, err := ssh.ParsePrivateKey(data)
+	if err != nil {
+		return nil
+	}
+	// One server at a time: two profiles may point at the same file.
+	for _, p := range cfg.Profiles {
+		if !p.Managed {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		args := []string{
+			"-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+			"-o", "ControlMaster=no", "-o", "ControlPath=none",
+			"-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
+		}
+		cmd := exec.CommandContext(ctx, "ssh", append(append(args, sshTargetArgs(p)...), removeKeyScript)...)
+		hideChildWindow(cmd)
+		cmd.Stdin = strings.NewReader(appKeyLine(signer.PublicKey()))
+		if err := cmd.Run(); err != nil {
+			left = append(left, p.Name)
+		}
+		cancel()
+	}
+	return left
+}
+
+// removeAppData deletes what claudeguard keeps next to config.json: its key
+// and the host keys trusted in the panel, the snapshot of Claude Code's
+// settings, the data of the settings window.
+func removeAppData() {
+	cfg, err := configPath()
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(cfg)
+	for _, name := range []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "settings.prev.json", "open.html", "window.lock", "window", "webview"} {
+		_ = os.RemoveAll(filepath.Join(dir, name))
+	}
+	_ = os.Remove(cfg)
+	_ = os.Remove(cfg + ".new")
+	_ = os.Remove(dir) // goes only if nothing else is in it
+}
+
 type setupRequest struct {
 	Name     string `json:"name"`
 	Host     string `json:"host"`
@@ -492,7 +557,7 @@ func setupServer(ctx context.Context, p Profile, password string, step func(int)
 	if err != nil {
 		return fmt.Errorf("сервер не открыл сессию: %s", shortErr(err))
 	}
-	sess.Stdin = strings.NewReader(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " claudeguard\n")
+	sess.Stdin = strings.NewReader(appKeyLine(pub))
 	stderr := &tailBuffer{} // bounded: the server decides how much it writes
 	sess.Stderr = stderr
 	err = sess.Run(installKeyScript)

@@ -498,9 +498,10 @@ func trayInstall() error {
 	return nil
 }
 
-// userUninstall stops the proxy last: when the settings page asked for the
-// removal, this process is part of that service and goes down with it.
-func userUninstall() error {
+// userUninstall leaves the proxy running: when the settings page asked for
+// the removal, this process is part of that service and goes down with it.
+// stopProxy does that as the very last step.
+func userUninstall() (notes []string, err error) {
 	_, _ = run("pkill", "-u", strconv.Itoa(os.Getuid()), "-f", "claudeguard tray$")
 	_ = os.Remove(autostartPath())
 	_ = os.Remove(desktopPath("claudeguard"))
@@ -509,9 +510,20 @@ func userUninstall() error {
 	_, _ = userSystemctl("disable", userService)
 	_ = os.Remove(userUnitPath())
 	_, _ = userSystemctl("daemon-reload")
-	_, _ = userSystemctl("stop", userService)
-	return nil
+	// Folders the install made go too, unless something else lives in them.
+	for _, d := range []string{
+		filepath.Dir(autostartPath()), filepath.Dir(desktopPath("x")),
+		filepath.Dir(userUnitPath()), userDir(".config", "systemd"),
+	} {
+		_ = os.Remove(d)
+	}
+	if _, err := os.Stat("/usr/bin/claudeguard"); err == nil {
+		notes = append(notes, "Сам пакет claudeguard удаляется менеджером пакетов: apt remove, dnf remove или pacman -R.")
+	}
+	return notes, nil
 }
+
+func stopProxy() { _, _ = userSystemctl("stop", userService) }
 
 func detachServe(args []string) error {
 	exe, err := os.Executable()
