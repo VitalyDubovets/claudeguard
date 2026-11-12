@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "0.4.1"
+const version = "0.4.2"
 
 const usageText = `claudeguard %s: proxy + kill switch for Claude
 

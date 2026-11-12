@@ -345,9 +345,7 @@ func userInstall(cfg Config, launcher bool) error {
 	if err := os.WriteFile(p, []byte(plist(agentLabel, []string{binPath, "serve"}, extra)), 0o644); err != nil {
 		return err
 	}
-	domain := "gui/" + strconv.Itoa(os.Getuid())
-	_, _ = run("launchctl", "bootout", domain+"/"+agentLabel)
-	if _, err := run("launchctl", "bootstrap", domain, p); err != nil {
+	if err := loadAgent(agentLabel, p); err != nil {
 		return err
 	}
 	fmt.Println("   local proxy", cfg.proxyURL(), "runs as LaunchAgent", agentLabel, "(log:", logPath+")")
@@ -383,6 +381,19 @@ func userInstall(cfg Config, launcher bool) error {
 	return nil
 }
 
+// loadAgent loads a LaunchAgent and starts it. RunAtLoad alone is not
+// enough: a login session that launchd keeps in on-demand-only mode leaves
+// the job loaded but never spawned.
+func loadAgent(label, plistPath string) error {
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	_, _ = run("launchctl", "bootout", domain+"/"+label)
+	if _, err := run("launchctl", "bootstrap", domain, plistPath); err != nil {
+		return err
+	}
+	_, _ = run("launchctl", "kickstart", domain+"/"+label)
+	return nil
+}
+
 func trayPlistPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "LaunchAgents", trayLabel+".plist")
@@ -396,9 +407,7 @@ func trayInstall() error {
 	if err := os.WriteFile(p, []byte(plist(trayLabel, []string{binPath, "tray"}, extra)), 0o644); err != nil {
 		return err
 	}
-	domain := "gui/" + strconv.Itoa(os.Getuid())
-	_, _ = run("launchctl", "bootout", domain+"/"+trayLabel)
-	if _, err := run("launchctl", "bootstrap", domain, p); err != nil {
+	if err := loadAgent(trayLabel, p); err != nil {
 		return err
 	}
 	fmt.Println("   menu bar icon runs as LaunchAgent", trayLabel)
