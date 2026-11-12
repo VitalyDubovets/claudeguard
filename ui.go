@@ -146,6 +146,19 @@ func (h *uiHandler) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case "POST /api/restart":
 		h.m.restart()
 		h.reply(w, nil)
+	case "POST /api/browser":
+		var req struct{ On bool }
+		if decode(w, r, &req) {
+			url := pacURL(h.m.config().Listen)
+			var err error
+			if req.On {
+				err = enableBrowserProxy(url)
+			} else {
+				err = disableBrowserProxy(url)
+			}
+			forgetBrowserProxyState()
+			h.reply(w, err)
+		}
 	case "POST /api/firewall":
 		var req struct {
 			AllowTunnels bool   `json:"allow_tunnels"`
@@ -291,6 +304,8 @@ type stateView struct {
 	SSHHosts     []string      `json:"ssh_hosts"`
 	AllowTunnels bool          `json:"allow_tunnels"`
 	ExtraBlock   []string      `json:"extra_block"`
+	BrowserProxy bool          `json:"browser_proxy"`
+	PACURL       string        `json:"pac_url"`
 }
 
 func (h *uiHandler) state() stateView {
@@ -306,6 +321,8 @@ func (h *uiHandler) state() stateView {
 		SSHHosts:     sshConfigHosts(),
 		AllowTunnels: cfg.AllowTunnels,
 		ExtraBlock:   cfg.ExtraBlock,
+		BrowserProxy: browserProxyOn(pacURL(cfg.Listen)),
+		PACURL:       pacURL(cfg.Listen),
 	}
 	for _, p := range cfg.Profiles {
 		pv := profileView{Profile: p}

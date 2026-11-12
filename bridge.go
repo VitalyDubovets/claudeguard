@@ -285,6 +285,10 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if nonce := r.URL.Query().Get("nonce"); nonce != "" && p.proof != nil {
 				io.WriteString(w, "proof "+p.proof(nonce)+"\n")
 			}
+		case r.URL.Path == "/proxy.pac":
+			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
+			w.Header().Set("Cache-Control", "no-store")
+			io.WriteString(w, pacFile(p.listen))
 		case p.ui != nil && (r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/") || strings.HasPrefix(r.URL.Path, "/api/")):
 			p.ui.ServeHTTP(w, r)
 		default:

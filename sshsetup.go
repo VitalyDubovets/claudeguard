@@ -458,7 +458,7 @@ func removeAppData() {
 		return
 	}
 	dir := filepath.Dir(cfg)
-	for _, name := range []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "settings.prev.json", "open.html", "window.lock", "window", "webview"} {
+	for _, name := range []string{"id_ed25519", "id_ed25519.pub", "known_hosts", "settings.prev.json", "browser.prev.json", "open.html", "window.lock", "window", "webview"} {
 		_ = os.RemoveAll(filepath.Join(dir, name))
 	}
 	_ = os.Remove(cfg)

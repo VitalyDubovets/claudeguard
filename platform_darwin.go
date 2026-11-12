@@ -90,8 +90,9 @@ var systemTools = map[string]string{
 	"pfctl": "/sbin/pfctl", "launchctl": "/bin/launchctl", "sudo": "/usr/bin/sudo",
 	"osascript": "/usr/bin/osascript", "osacompile": "/usr/bin/osacompile",
 	"codesign": "/usr/bin/codesign", "open": "/usr/bin/open", "touch": "/usr/bin/touch", "pgrep": "/usr/bin/pgrep",
-	"defaults": "/usr/bin/defaults",
-	"pkill":    "/usr/bin/pkill",
+	"defaults":     "/usr/bin/defaults",
+	"pkill":        "/usr/bin/pkill",
+	"networksetup": "/usr/sbin/networksetup",
 }
 
 func run(name string, args ...string) (string, error) {

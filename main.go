@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "0.4.4"
+const version = "0.5.0"
 
 const usageText = `claudeguard %s: proxy + kill switch for Claude
 
@@ -199,6 +199,9 @@ func cmdUninstall(args []string) error {
 	}
 	if err := configureClaudeCode(cfg.proxyURL(), false); err != nil {
 		errs = append(errs, fmt.Errorf("~/.claude/settings.json: %w", err))
+	}
+	if err := disableBrowserProxy(pacURL(cfg.Listen)); err != nil {
+		notes = append(notes, "Настройка прокси для браузеров осталась: "+err.Error()+". Её можно убрать в настройках сети, поле автонастройки прокси.")
 	}
 	closePanel()
 	more, err := userUninstall()

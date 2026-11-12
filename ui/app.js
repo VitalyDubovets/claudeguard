@@ -174,6 +174,7 @@ function render() {
   renderStatus();
   renderServers();
   renderKillSwitch();
+  renderBrowser();
   $('ver').textContent = `Claudeguard ${state.version}, прокси на ${state.listen}`;
 }
 
@@ -392,6 +393,40 @@ function renderKillSwitch() {
       ? 'Windows попросит подтверждение администратора.'
       : 'macOS попросит пароль администратора. Открытые соединения Claude с Anthropic оборвутся и тут же переподключатся.';
   }
+}
+
+let brBusy = false;
+let brError = '';
+
+function renderBrowser() {
+  const sw = $('br');
+  if (!brBusy) sw.setAttribute('aria-checked', String(!!state.browser_proxy));
+  sw.disabled = brBusy;
+  const note = $('br-note');
+  if (brError) {
+    note.className = 'err small';
+    note.textContent = `${brError} Адрес для ручной настройки: ${state.pac_url}`;
+  } else {
+    note.className = 'muted small';
+    note.textContent = state.browser_proxy
+      ? 'claude.ai и другие сайты Anthropic идут через сервер выше, остальные сайты — как обычно. Если страница была открыта, обновите её.'
+      : 'claude.ai в браузере сейчас закрыт kill switch. Включите, и сайты Claude пойдут через сервер выше; остальные сайты это не затронет.';
+  }
+}
+
+async function toggleBrowser() {
+  const on = $('br').getAttribute('aria-checked') !== 'true';
+  brBusy = true;
+  brError = '';
+  $('br').setAttribute('aria-checked', String(on));
+  renderBrowser();
+  try {
+    await api('/api/browser', { on });
+  } catch (e) {
+    brError = e.message;
+  }
+  brBusy = false;
+  await refresh(true);
 }
 
 function editDraft(change) {
@@ -799,6 +834,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) { alert(e.message); }
   });
   $('tun').addEventListener('click', () => editDraft({ allow: $('tun').getAttribute('aria-checked') !== 'true' }));
+  $('br').addEventListener('click', toggleBrowser);
   $('extra').addEventListener('input', () => editDraft({ extra: $('extra').value }));
   $('fw-cancel').addEventListener('click', () => { fwDraft = null; fwError = ''; renderKillSwitch(); });
   $('fw-apply').addEventListener('click', applyFirewall);
