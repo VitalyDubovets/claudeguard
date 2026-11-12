@@ -233,7 +233,7 @@ function renderStatus() {
     setBadge('ok');
     $('st-title').textContent = `Подключено через ${p.name}`;
     $('st-detail').textContent = fresh(rec) && rec.ok
-      ? `Выход в сеть с ${rec.exit_ip || 'неизвестного адреса'}, отклик ${rec.latency_ms} мс`
+      ? `Выход в сеть с ${rec.exit_ip || 'неизвестного адреса'}, отклик ${rec.latency_ms} мс` + (rec.connect_ms ? `, новое соединение ${rec.connect_ms} мс` : '')
       : 'Проверяю, что Anthropic отвечает через этот сервер…';
     const relaunch = button('Перезапустить Claude', 'btn', () => {
       if (!confirm('Приложение Claude закроется и откроется снова, уже через прокси. Продолжить?')) return;

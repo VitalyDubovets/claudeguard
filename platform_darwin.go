@@ -390,7 +390,16 @@ func userInstall(cfg Config, launcher bool) error {
 func loadAgent(label, plistPath string) error {
 	domain := "gui/" + strconv.Itoa(os.Getuid())
 	_, _ = run("launchctl", "bootout", domain+"/"+label)
-	if _, err := run("launchctl", "bootstrap", domain, plistPath); err != nil {
+	// bootout returns before a running job is gone, and bootstrap fails
+	// while it is still there.
+	var err error
+	for i := 0; i < 20; i++ {
+		if _, err = run("launchctl", "bootstrap", domain, plistPath); err == nil {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil {
 		return err
 	}
 	_, _ = run("launchctl", "kickstart", domain+"/"+label)

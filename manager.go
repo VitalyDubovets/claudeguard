@@ -185,6 +185,7 @@ type testResult struct {
 	OK        bool   `json:"ok"`
 	ExitIP    string `json:"exit_ip,omitempty"`
 	LatencyMs int64  `json:"latency_ms,omitempty"`
+	ConnectMs int64  `json:"connect_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -276,6 +277,16 @@ func probe(ctx context.Context, up *upstream) testResult {
 	}
 	resp.Body.Close()
 	res := testResult{OK: true, LatencyMs: time.Since(start).Milliseconds()}
+	// The first request paid for a new connection: TCP and TLS handshakes,
+	// several round trips. Claude keeps its connections open, so what it
+	// feels is one round trip on a warm one.
+	res.ConnectMs = res.LatencyMs
+	start = time.Now()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodHead, "https://api.anthropic.com/", nil)
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+		res.LatencyMs = time.Since(start).Milliseconds()
+	}
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org/", nil)
 	if resp, err := client.Do(req); err == nil {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
