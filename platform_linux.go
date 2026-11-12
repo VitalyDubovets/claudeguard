@@ -580,12 +580,18 @@ func installed() bool {
 	return installedBin() != optBin || sameFile(exe, optBin)
 }
 
+// previousInstall reports whether some version, this one or another, is set up.
+func previousInstall() bool {
+	_, err := os.Stat(filepath.Join(unitDir, fwService))
+	return err == nil
+}
+
 func dialog(kind, text string) bool {
 	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		fmt.Fprintln(os.Stderr, text)
 		return true
 	}
-	flags := map[string][2]string{"ask": {"--question", "--yesno"}, "error": {"--error", "--error"}, "info": {"--info", "--msgbox"}}[kind]
+	flags := map[string][2]string{"ask": {"--question", "--yesno"}, "update": {"--question", "--yesno"}, "error": {"--error", "--error"}, "info": {"--info", "--msgbox"}}[kind]
 	if p, err := exec.LookPath("zenity"); err == nil {
 		return exec.Command(p, flags[0], "--title=Claudeguard", "--width=420", "--text="+text).Run() == nil
 	}

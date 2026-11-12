@@ -28,6 +28,7 @@ func launchApp(Config, string) error       { return errUnsupported }
 func elevateGUI([]string) error            { return errUnsupported }
 func launchedFromGUI() bool                { return false }
 func installed() bool                      { return false }
+func previousInstall() bool                { return false }
 func hideConsole()                         {}
 func misplaced() string                    { return "" }
 func dialog(string, string) bool           { return false }

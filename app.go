@@ -66,8 +66,18 @@ func cmdApp() error {
 	}
 	cfg, err := loadConfig()
 	if err == nil && !installed() {
-		if !dialog("ask", "Claudeguard пустит Claude через ваш прокси-сервер и закроет прямой доступ к Anthropic: если прокси упадёт, Claude останется без связи, а не пойдёт напрямую.\n\nДля правил файрвола один раз понадобится пароль администратора. Сервер вы выберете на следующем шаге.") {
+		// An older version is in place: this start replaces it and keeps
+		// the server list and every setting.
+		update := previousInstall()
+		ask := "Claudeguard пустит Claude через ваш прокси-сервер и закроет прямой доступ к Anthropic: если прокси упадёт, Claude останется без связи, а не пойдёт напрямую.\n\nДля правил файрвола один раз понадобится пароль администратора. Сервер вы выберете на следующем шаге."
+		if update {
+			ask = "Обновить Claudeguard до версии " + version + "?\n\nСерверы и настройки сохранятся. Прокси перезапустится, связь Claude прервётся на несколько секунд. Понадобится пароль администратора."
+		}
+		if !dialog(map[bool]string{false: "ask", true: "update"}[update], ask) {
 			return nil
+		}
+		if update {
+			closePanel()
 		}
 		if err = saveConfig(cfg); err == nil {
 			err = doInstall(cfg, cfg.firewall(), installOptions{launcher: true, tray: true, settings: true}, elevateGUI)

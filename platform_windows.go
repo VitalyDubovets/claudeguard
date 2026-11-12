@@ -338,6 +338,12 @@ func installed() bool {
 	return sameFile(exe, installedExe()) && firewallStatus() == "active"
 }
 
+// previousInstall reports whether some version, this one or another, is set up.
+func previousInstall() bool {
+	_, err := os.Stat(installedExe())
+	return err == nil
+}
+
 func dialog(kind, text string) bool {
 	const (
 		mbOKCancel, mbIconError, mbIconQuestion, mbIconInfo = 0x1, 0x10, 0x20, 0x40
@@ -345,7 +351,7 @@ func dialog(kind, text string) bool {
 	)
 	flags := uintptr(mbIconInfo)
 	switch kind {
-	case "ask":
+	case "ask", "update":
 		flags = mbOKCancel | mbIconQuestion
 	case "error":
 		flags = mbIconError

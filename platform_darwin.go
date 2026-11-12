@@ -345,6 +345,9 @@ func userInstall(cfg Config, launcher bool) error {
 	if err := os.WriteFile(p, []byte(plist(agentLabel, []string{binPath, "serve"}, extra)), 0o644); err != nil {
 		return err
 	}
+	// A proxy the old version started on its own would keep the port.
+	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+agentLabel)
+	stopProxy()
 	if err := loadAgent(agentLabel, p); err != nil {
 		return err
 	}
@@ -518,11 +521,19 @@ func installed() bool {
 	return sameFile(exe, binPath)
 }
 
+// previousInstall reports whether some version, this one or another, is set up.
+func previousInstall() bool {
+	_, err := os.Stat(daemonPlist)
+	return err == nil
+}
+
 func dialog(kind, text string) bool {
 	buttons, icon := `{"OK"} default button 1`, "note"
 	switch kind {
 	case "ask":
 		buttons = `{"Отмена", "Установить"} default button 2 cancel button 1`
+	case "update":
+		buttons = `{"Отмена", "Обновить"} default button 2 cancel button 1`
 	case "error":
 		icon = "stop"
 	}
