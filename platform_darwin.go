@@ -23,6 +23,7 @@ const (
 	daemonLabel  = "com.claudeguard.firewall"
 	daemonPlist  = "/Library/LaunchDaemons/" + daemonLabel + ".plist"
 	agentLabel   = "com.claudeguard.proxy"
+	trayLabel    = "com.claudeguard.tray"
 	launcherName = "Claude via Proxy.app"
 	uiAppName    = "Claudeguard.app"
 	defaultApp   = "/Applications/Claude.app"
@@ -35,7 +36,7 @@ func elevate(args []string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("sudo", append([]string{exe}, args...)...)
+	cmd := exec.Command(systemTools["sudo"], append([]string{exe}, args...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
@@ -53,7 +54,7 @@ func elevateGUI(args []string) error {
 	}
 	shell := strings.Join(quoted, " ")
 	lit := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(shell)
-	out, err := exec.Command("osascript", "-e",
+	out, err := exec.Command(systemTools["osascript"], "-e",
 		`do shell script "`+lit+`" with prompt "Claudeguard хочет обновить правила kill switch." with administrator privileges`).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -65,10 +66,31 @@ func elevateGUI(args []string) error {
 	return nil
 }
 
-func openBrowser(url string) error { return exec.Command("open", url).Run() }
+// listenerPID is the process of this user that listens on 127.0.0.1:port,
+// or 0. lsof shows a non-root user only their own sockets, which is the point.
+func listenerPID(port int) int {
+	out, _ := exec.Command("/usr/sbin/lsof", "-nP", "-a", "-iTCP@127.0.0.1:"+strconv.Itoa(port), "-sTCP:LISTEN", "-Fp").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "p") {
+			pid, _ := strconv.Atoi(line[1:])
+			return pid
+		}
+	}
+	return 0
+}
+
+func openBrowser(url string) error { return exec.Command(systemTools["open"], url).Run() }
+
+// systemTools pins the tools we run, some of them as root, to their system
+// locations: PATH is the user's and may list a writable directory first.
+var systemTools = map[string]string{
+	"pfctl": "/sbin/pfctl", "launchctl": "/bin/launchctl", "sudo": "/usr/bin/sudo",
+	"osascript": "/usr/bin/osascript", "osacompile": "/usr/bin/osacompile",
+	"codesign": "/usr/bin/codesign", "open": "/usr/bin/open", "touch": "/usr/bin/touch", "pgrep": "/usr/bin/pgrep",
+}
 
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := exec.Command(systemTools[name], args...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out)
 	}
@@ -223,8 +245,11 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
+	// Never write through something that is already there: as root, a
+	// planted symlink would overwrite whatever it points at.
 	tmp := dst + ".new"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	_ = os.Remove(tmp)
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, mode)
 	if err != nil {
 		return err
 	}
@@ -316,9 +341,12 @@ func userInstall(cfg Config, launcher bool) error {
 	fmt.Println("   local proxy", cfg.proxyURL(), "runs as LaunchAgent", agentLabel, "(log:", logPath+")")
 
 	if launcher {
-		for _, l := range []struct{ path, cmd string }{
-			{launcherPath(), "launch"},
-			{uiAppPath(), "ui"},
+		for _, l := range []struct {
+			path, cmd string
+			icon      []byte
+		}{
+			{launcherPath(), "launch", launcherIcon},
+			{uiAppPath(), "ui", uiIcon},
 		} {
 			_ = os.MkdirAll(filepath.Dir(l.path), 0o755)
 			_ = os.RemoveAll(l.path)
@@ -326,14 +354,45 @@ func userInstall(cfg Config, launcher bool) error {
 			if _, err := run("osacompile", "-o", l.path, "-e", script); err != nil {
 				return err
 			}
+			// osacompile gives every applet the same script icon.
+			if err := os.WriteFile(filepath.Join(l.path, "Contents", "Resources", "applet.icns"), l.icon, 0o644); err == nil {
+				_ = os.Remove(filepath.Join(l.path, "Contents", "Resources", "Assets.car"))
+				// The applet is ad-hoc signed; seal the changed resources again.
+				_, _ = run("codesign", "--force", "--sign", "-", l.path)
+				_, _ = run("touch", l.path)
+			}
 			fmt.Println("   launcher:", l.path)
 		}
 	}
 	return nil
 }
 
+func trayPlistPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "LaunchAgents", trayLabel+".plist")
+}
+
+// trayInstall starts the menu bar icon now and at every login. No KeepAlive:
+// "Убрать значок" in its menu must be able to quit it until the next login.
+func trayInstall() error {
+	p := trayPlistPath()
+	extra := "\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n"
+	if err := os.WriteFile(p, []byte(plist(trayLabel, []string{binPath, "tray"}, extra)), 0o644); err != nil {
+		return err
+	}
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	_, _ = run("launchctl", "bootout", domain+"/"+trayLabel)
+	if _, err := run("launchctl", "bootstrap", domain, p); err != nil {
+		return err
+	}
+	fmt.Println("   menu bar icon runs as LaunchAgent", trayLabel)
+	return nil
+}
+
 func userUninstall() error {
 	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+agentLabel)
+	_, _ = run("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+trayLabel)
+	_ = os.Remove(trayPlistPath())
 	_ = os.Remove(agentPlistPath())
 	_ = os.RemoveAll(launcherPath())
 	_ = os.RemoveAll(uiAppPath())
@@ -351,7 +410,7 @@ func detachServe(args []string) error {
 }
 
 func claudeRunning() bool {
-	return exec.Command("pgrep", "-x", "Claude").Run() == nil
+	return exec.Command(systemTools["pgrep"], "-x", "Claude").Run() == nil
 }
 
 // launchApp restarts the desktop app with Chromium's --proxy-server switch.

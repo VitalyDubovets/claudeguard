@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type uiHandler struct {
 	m      *manager
 	listen string
 	static http.Handler
+	keys   hostKeys
+	// setupStep is how far the running /api/setup has got, for the panel.
+	setupStep atomic.Int32
 }
 
 func newUIHandler(m *manager, listen string) http.Handler {
@@ -112,6 +116,11 @@ func (h *uiHandler) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if decode(w, r, &req) {
 			req.Profile.Name = strings.TrimSpace(req.Profile.Name)
 			req.Profile.Target = strings.TrimSpace(req.Profile.Target)
+			// The page never gets a saved proxy password, so an edit that
+			// leaves the user as is means "same password".
+			if old, ok := h.m.config().profile(req.Old); ok && old.Kind != "ssh" && old.Kind == req.Profile.Kind {
+				req.Profile.Target = keepPassword(old.Target, req.Profile.Target)
+			}
 			h.reply(w, h.m.update(func(c *Config) error {
 				if err := c.upsert(req.Old, req.Profile); err != nil {
 					return err
@@ -161,6 +170,102 @@ func (h *uiHandler) serveAPI(w http.ResponseWriter, r *http.Request) {
 			c.AllowTunnels, c.ExtraBlock = fw.AllowTunnels, fw.Extra
 			return nil
 		}))
+	case "POST /api/hostkey":
+		// Either a server from the list or the address typed in setup.
+		var req struct {
+			Name string `json:"name"`
+			setupRequest
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		p, ok := h.m.config().profile(req.Name)
+		if req.Name == "" {
+			p, ok = req.setupRequest.profile(), true
+		}
+		if !ok || p.Kind != "ssh" {
+			jsonError(w, http.StatusBadRequest, "нет такого SSH-сервера")
+			return
+		}
+		if err := p.validate(); err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		v, err := h.keys.inspect(ctx, p)
+		if err != nil {
+			jsonError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, v)
+	case "POST /api/trust":
+		var req struct {
+			Address     string `json:"address"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		key, err := h.keys.take(req.Address, req.Fingerprint)
+		if err == nil {
+			err = trustHostKey(req.Address, key)
+			if err == nil {
+				// The tunnel may be waiting out a retry after "Host key verification failed".
+				if p, ok := h.m.config().profile(h.m.config().Active); ok && p.Kind == "ssh" && h.m.tunnelState().State == "down" {
+					h.m.restart()
+				}
+			}
+		}
+		h.reply(w, err)
+	case "GET /api/setup":
+		writeJSON(w, map[string]int32{"step": h.setupStep.Load()})
+	case "POST /api/setup":
+		var req setupRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		p := req.profile()
+		if err := p.validate(); err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Password == "" {
+			jsonError(w, http.StatusBadRequest, "введите пароль")
+			return
+		}
+		if _, taken := h.m.config().profile(p.Name); taken {
+			jsonError(w, http.StatusBadRequest, "сервер «"+p.Name+"» уже есть")
+			return
+		}
+		h.setupStep.Store(0)
+		fail := func(code int, err error) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(code)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "step": h.setupStep.Load()})
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+		defer cancel()
+		if err := setupServer(ctx, p, req.Password, func(n int) { h.setupStep.Store(int32(n)) }); err != nil {
+			fail(http.StatusBadGateway, err)
+			return
+		}
+		if err := h.m.update(func(c *Config) error {
+			if err := c.upsert("", p); err != nil {
+				return err
+			}
+			if c.Active == "" && len(c.Profiles) == 1 {
+				c.Active = p.Name
+			}
+			return nil
+		}); err != nil {
+			fail(http.StatusBadRequest, err)
+			return
+		}
+		// The real thing: the system ssh logs in with the new key.
+		tctx, tcancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer tcancel()
+		writeJSON(w, map[string]any{"ok": true, "name": p.Name, "test": h.m.testProfile(tctx, p.Name)})
 	case "POST /api/launch":
 		h.reply(w, launchApp(h.m.config(), ""))
 	default:
@@ -201,6 +306,9 @@ func (h *uiHandler) state() stateView {
 	}
 	for _, p := range cfg.Profiles {
 		pv := profileView{Profile: p}
+		if p.Kind != "ssh" {
+			pv.Target = redactTarget(p.Target)
+		}
 		if t, ok := tests[p.Name]; ok {
 			pv.Test = &t
 		}

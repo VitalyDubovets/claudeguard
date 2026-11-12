@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-func sshArgs(host string, port int) []string {
-	return []string{
+func sshArgs(p Profile, port int) []string {
+	args := []string{
 		"-N", "-D", fmt.Sprintf("127.0.0.1:%d", port),
 		"-o", "BatchMode=yes",
 		"-o", "ExitOnForwardFailure=yes",
@@ -27,8 +27,12 @@ func sshArgs(host string, port int) []string {
 		// after we kill ssh, and traffic would stay on the old server.
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
-		host,
+		// The panel decides which host keys to trust; a lax ~/.ssh/config
+		// must not let the tunnel accept a new or changed key on its own.
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UpdateHostKeys=no",
 	}
+	return append(args, sshTargetArgs(p)...)
 }
 
 // tailBuffer keeps the last bytes ssh wrote to stderr, for error messages.
@@ -56,10 +60,13 @@ func (t *tailBuffer) String() string {
 }
 
 // startSSH runs one ssh -D and reports once its SOCKS port accepts
-// connections. The returned channel yields ssh's exit error.
-func startSSH(ctx context.Context, host string, port int, ready func()) (<-chan error, *tailBuffer, error) {
+// connections and it is this ssh that listens there: the port number is
+// visible to every local user, and whoever grabs it before ssh binds would
+// otherwise receive Claude's traffic. The returned channel yields ssh's
+// exit error.
+func startSSH(ctx context.Context, p Profile, port int, ready func()) (<-chan error, *tailBuffer, error) {
 	stderr := &tailBuffer{}
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs(host, port)...)
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs(p, port)...)
 	cmd.Stderr = stderr
 	hideChildWindow(cmd)
 	if err := cmd.Start(); err != nil {
@@ -78,6 +85,9 @@ func startSSH(ctx context.Context, host string, port int, ready func()) (<-chan 
 			case <-time.After(300 * time.Millisecond):
 				if c, err := net.DialTimeout("tcp", addr, 300*time.Millisecond); err == nil {
 					c.Close()
+					if listenerPID(port) != cmd.Process.Pid {
+						continue
+					}
 					if ready != nil {
 						ready()
 					}
@@ -92,13 +102,21 @@ func startSSH(ctx context.Context, host string, port int, ready func()) (<-chan 
 
 // superviseSSH keeps the SOCKS tunnel up until ctx is cancelled: after
 // sleep, a network change or a dropped connection ssh exits and is restarted.
-// While it is down the bridge answers 502, so nothing goes direct.
-func superviseSSH(ctx context.Context, host string, port int, report func(state, detail string)) {
+// While it is down the bridge answers 502, so nothing goes direct. Every
+// attempt gets a fresh port, reported with "up": a port a dead ssh left
+// behind is never used again.
+func superviseSSH(ctx context.Context, p Profile, report func(state, detail string, port int)) {
+	host := p.Target
 	for ctx.Err() == nil {
 		start := time.Now()
-		report("starting", "")
-		log.Printf("ssh tunnel %s -> 127.0.0.1:%d: starting", host, port)
-		exited, stderr, err := startSSH(ctx, host, port, func() { report("up", "") })
+		report("starting", "", 0)
+		var exited <-chan error
+		stderr := &tailBuffer{}
+		port, err := freePort()
+		if err == nil {
+			log.Printf("ssh tunnel %s -> 127.0.0.1:%d: starting", host, port)
+			exited, stderr, err = startSSH(ctx, p, port, func() { report("up", "", port) })
+		}
 		if err == nil {
 			err = <-exited
 		}
@@ -110,7 +128,7 @@ func superviseSSH(ctx context.Context, host string, port int, report func(state,
 			detail = err.Error()
 		}
 		log.Printf("ssh tunnel %s exited: %v %s", host, err, detail)
-		report("down", detail)
+		report("down", detail, 0)
 		delay := time.Second
 		if time.Since(start) < 30*time.Second {
 			delay = 3 * time.Second

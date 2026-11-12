@@ -15,6 +15,7 @@ import (
 const (
 	runKey       = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 	runValue     = "claudeguard"
+	trayRunValue = "claudeguard-tray"
 	shortcutName = "Claude via Proxy.lnk"
 	uiShortcut   = "Claudeguard.lnk"
 )
@@ -22,6 +23,22 @@ const (
 // elevateGUI is the same UAC prompt without console windows, for the
 // settings page running in the background.
 func elevateGUI(args []string) error { return elevateWith(args, true) }
+
+// listenerPID is the process that listens on 127.0.0.1:port, or 0.
+func listenerPID(port int) int {
+	cmd := exec.Command("netstat", "-ano", "-p", "TCP")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, _ := cmd.Output()
+	want := "127.0.0.1:" + strconv.Itoa(port)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 5 && f[1] == want && f[3] == "LISTENING" {
+			pid, _ := strconv.Atoi(f[4])
+			return pid
+		}
+	}
+	return 0
+}
 
 func openBrowser(url string) error {
 	return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
@@ -153,16 +170,21 @@ func userInstall(cfg Config, launcher bool) error {
 	fmt.Println("   local proxy", cfg.proxyURL(), "starts at logon (log:", filepath.Join(installDir(), "claudeguard.log")+")")
 
 	if launcher {
+		launchIco := filepath.Join(installDir(), "launcher.ico")
+		uiIco := filepath.Join(installDir(), "claudeguard.ico")
+		_ = os.WriteFile(launchIco, launcherIcon, 0o644)
+		_ = os.WriteFile(uiIco, uiIcon, 0o644)
 		script := fmt.Sprintf(`$w = New-Object -ComObject WScript.Shell
 foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-  foreach ($l in @(@(%s, 'launch'), @(%s, 'ui'))) {
+  foreach ($l in @(@(%s, 'launch', %s), @(%s, 'ui', %s))) {
     $s = $w.CreateShortcut((Join-Path $d $l[0]))
     $s.TargetPath = %s
     $s.Arguments = $l[1]
+    $s.IconLocation = $l[2]
     $s.WindowStyle = 7
     $s.Save()
   }
-}`, psQuote(shortcutName), psQuote(uiShortcut), psQuote(installedExe()))
+}`, psQuote(shortcutName), psQuote(launchIco), psQuote(uiShortcut), psQuote(uiIco), psQuote(installedExe()))
 		if _, err := powershell(script); err != nil {
 			return err
 		}
@@ -171,8 +193,22 @@ foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFold
 	return nil
 }
 
+// trayInstall starts the tray icon now and at every logon.
+func trayInstall() error {
+	cmdline := fmt.Sprintf(`"%s" tray --detach`, installedExe())
+	if out, err := exec.Command("reg", "add", runKey, "/v", trayRunValue, "/t", "REG_SZ", "/d", cmdline, "/f").CombinedOutput(); err != nil {
+		return fmt.Errorf("reg add: %w\n%s", err, out)
+	}
+	if out, err := exec.Command(installedExe(), "tray", "--detach").CombinedOutput(); err != nil {
+		return fmt.Errorf("start tray: %w\n%s", err, out)
+	}
+	fmt.Println("   tray icon starts at logon")
+	return nil
+}
+
 func userUninstall() error {
 	_ = exec.Command("reg", "delete", runKey, "/v", runValue, "/f").Run()
+	_ = exec.Command("reg", "delete", runKey, "/v", trayRunValue, "/f").Run()
 	stopOtherInstances()
 	_, _ = powershell(fmt.Sprintf(`foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
   Remove-Item -ErrorAction SilentlyContinue (Join-Path $d %s), (Join-Path $d %s)

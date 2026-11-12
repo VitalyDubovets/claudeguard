@@ -6,9 +6,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,15 +24,16 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 const usageText = `claudeguard %s: proxy + kill switch for Claude
 
 Usage:
   claudeguard install [--ssh HOST | --upstream URL] [--listen ADDR] [--allow-tunnels]
-                      [--extra-block CIDRS] [--no-settings] [--no-launcher]
+                      [--extra-block CIDRS] [--no-settings] [--no-launcher] [--no-tray]
       Set everything up. Asks for the admin password once (firewall rules).
   claudeguard ui                 Open the settings page (servers, kill switch)
+  claudeguard tray               Menu bar / tray icon: status and server switch
   claudeguard uninstall          Remove rules, background proxy, launchers, settings
   claudeguard status             Check that the proxy works and direct access is blocked
   claudeguard launch [--app P]   (Re)start the Claude desktop app through the proxy
@@ -60,6 +66,8 @@ func main() {
 		err = cmdLaunch(args)
 	case "ui":
 		err = cmdUI(args)
+	case "tray":
+		err = cmdTray(args)
 	case "serve":
 		err = cmdServe(args)
 	case "enable":
@@ -117,6 +125,7 @@ func cmdInstall(args []string) error {
 	extra := firewallFlags(fs, &fw)
 	noSettings := fs.Bool("no-settings", false, "do not touch ~/.claude/settings.json")
 	noLauncher := fs.Bool("no-launcher", false, "do not create the 'Claude via Proxy' launcher")
+	noTray := fs.Bool("no-tray", false, "do not add the menu bar / tray icon")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -145,6 +154,11 @@ func cmdInstall(args []string) error {
 	fmt.Println("2/3 Background proxy, launcher...")
 	if err := userInstall(cfg, !*noLauncher); err != nil {
 		return err
+	}
+	if !*noTray {
+		if err := trayInstall(); err != nil {
+			fmt.Println("   tray icon not installed:", err)
+		}
 	}
 	if !*noSettings {
 		fmt.Println("3/3 Claude Code settings (env HTTPS_PROXY/HTTP_PROXY)...")
@@ -224,7 +238,7 @@ func cmdUI(args []string) error {
 	if err != nil {
 		return err
 	}
-	id := proxyIdentity(cfg.Listen)
+	id := proxyIdentity(cfg)
 	if strings.HasPrefix(id, "NOT") {
 		if err := detachServe([]string{"serve"}); err != nil {
 			return err
@@ -232,16 +246,34 @@ func cmdUI(args []string) error {
 		for i := 0; i < 50 && !proxyListening(cfg.Listen); i++ {
 			time.Sleep(100 * time.Millisecond)
 		}
-		id = proxyIdentity(cfg.Listen)
+		id = proxyIdentity(cfg)
 	}
 	if !strings.HasPrefix(id, "running") {
 		return fmt.Errorf("local proxy %s: %s", cfg.Listen, id)
 	}
 	url := "http://" + cfg.Listen + "/ui#token=" + cfg.Token
-	if err := openBrowser(url); err != nil {
+	// The key must not show up in `ps` as an argument of the browser's
+	// opener, so the browser gets a private file that redirects to the page.
+	page, err := appSSHFile("open.html")
+	if err == nil {
+		err = os.WriteFile(page, []byte(`<!doctype html><meta charset="utf-8"><title>Claudeguard</title>`+
+			`<meta http-equiv="refresh" content="0;url=`+url+`"><a href="`+url+`">Открыть Claudeguard</a>`), 0o600)
+	}
+	if err == nil {
+		err = openBrowser(page)
+	}
+	if err != nil {
 		fmt.Println("Open this in a browser:", url)
 	}
 	return nil
+}
+
+// identityProof is what /claudeguard answers to a nonce. Only the user's own
+// claudeguard knows the token, so another program on the port cannot fake it.
+func identityProof(token, nonce string) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write([]byte("claudeguard identity " + nonce))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func cmdEnable(args []string) error {
@@ -324,19 +356,30 @@ func connectVia(listen, target string) error {
 	return nil
 }
 
-// proxyIdentity tells our proxy apart from another program on the same port.
-func proxyIdentity(listen string) string {
+// proxyIdentity tells our proxy apart from another program on the same
+// port. The answer starts with "running" only if the listener proved it
+// holds this user's token: the token must never be sent to anyone else.
+func proxyIdentity(cfg Config) string {
+	listen := cfg.Listen
 	if !proxyListening(listen) {
 		return "NOT running"
 	}
+	var nb [16]byte
+	rand.Read(nb[:])
+	nonce := hex.EncodeToString(nb[:])
 	c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	resp, err := c.Get("http://" + listen + "/claudeguard")
+	resp, err := c.Get("http://" + listen + "/claudeguard?nonce=" + nonce)
 	if err == nil {
 		defer resp.Body.Close()
-		var b [200]byte
-		n, _ := resp.Body.Read(b[:])
-		if s := strings.TrimSpace(string(b[:n])); strings.HasPrefix(s, "claudeguard") {
-			return "running (" + s + ")"
+		var b [400]byte
+		n, _ := io.ReadFull(resp.Body, b[:])
+		lines := strings.Split(strings.TrimSpace(string(b[:n])), "\n")
+		if strings.HasPrefix(lines[0], "claudeguard") {
+			want := "proof " + identityProof(cfg.Token, nonce)
+			if cfg.Token != "" && len(lines) > 1 && hmac.Equal([]byte(strings.TrimSpace(lines[1])), []byte(want)) {
+				return "running (" + lines[0] + ")"
+			}
+			return "a claudeguard of ANOTHER user or an old version is on the port; run install again or pick another --listen"
 		}
 	}
 	return "port is taken by ANOTHER program; pick another --listen"
@@ -383,7 +426,7 @@ func cmdStatus(args []string) error {
 		active = "none: pick one in `claudeguard ui`"
 	}
 	fmt.Printf("server:          %s\n", active)
-	fmt.Printf("local proxy:     %s %s\n", cfg.proxyURL(), proxyIdentity(cfg.Listen))
+	fmt.Printf("local proxy:     %s %s\n", cfg.proxyURL(), proxyIdentity(cfg))
 	fmt.Printf("firewall rules:  %s\n", firewallStatus())
 	if err := connectVia(cfg.Listen, "api.anthropic.com:443"); err != nil {
 		fmt.Printf("via proxy:       FAIL (%v)\n", err)

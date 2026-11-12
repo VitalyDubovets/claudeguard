@@ -265,7 +265,7 @@ func TestParseCIDRList(t *testing.T) {
 }
 
 func TestSSHArgs(t *testing.T) {
-	args := strings.Join(sshArgs("vd-poland", 41081), " ")
+	args := strings.Join(sshArgs(Profile{Kind: "ssh", Target: "vd-poland"}, 41081), " ")
 	for _, want := range []string{"-D 127.0.0.1:41081", "BatchMode=yes", "ControlMaster=no", "ControlPath=none"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("ssh args lack %q: %s", want, args)

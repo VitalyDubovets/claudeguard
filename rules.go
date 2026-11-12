@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -52,10 +52,14 @@ func parseCIDRList(s string) ([]string, error) {
 		if p == "" {
 			continue
 		}
-		if _, _, err := net.ParseCIDR(p); err != nil {
-			if net.ParseIP(p) == nil {
-				return nil, fmt.Errorf("not an IP or CIDR: %q", p)
-			}
+		// Written back in canonical form: pf and PowerShell must read the
+		// same network we validated.
+		if pfx, err := netip.ParsePrefix(p); err == nil {
+			p = pfx.Masked().String()
+		} else if ip, err := netip.ParseAddr(p); err == nil && ip.Zone() == "" {
+			p = ip.Unmap().String()
+		} else {
+			return nil, fmt.Errorf("not an IP or CIDR: %q", p)
 		}
 		out = append(out, p)
 	}

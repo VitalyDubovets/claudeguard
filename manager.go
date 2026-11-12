@@ -63,37 +63,32 @@ func (m *manager) applyLocked() {
 		m.setTunnelLocked("off", "сервер не выбран")
 		return
 	}
-	// Every tunnel gets a fresh port, so a dying ssh from the previous server
-	// can never be mistaken for the new one.
-	port := 0
 	if p.Kind == "ssh" {
-		var err error
-		if port, err = freePort(); err != nil {
-			m.setTunnelLocked("down", err.Error())
-			return
-		}
+		// The bridge gets the tunnel's port only while our own ssh is up
+		// and listening on it; at any other moment it answers 502.
+		ctx, cancel := context.WithCancel(context.Background())
+		m.stopSSH = cancel
+		go superviseSSH(ctx, p, func(state, detail string, port int) {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if ctx.Err() != nil {
+				return
+			}
+			m.up = nil
+			if state == "up" {
+				m.up, _ = p.upstream(port)
+			}
+			m.setTunnelLocked(state, detail)
+		})
+		return
 	}
-	up, err := p.upstream(port)
+	up, err := p.upstream(0)
 	if err != nil {
 		m.setTunnelLocked("off", err.Error())
 		return
 	}
 	m.up = up
-	switch p.Kind {
-	case "ssh":
-		ctx, cancel := context.WithCancel(context.Background())
-		m.stopSSH = cancel
-		host := p.Target
-		go superviseSSH(ctx, host, port, func(state, detail string) {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if ctx.Err() == nil {
-				m.setTunnelLocked(state, detail)
-			}
-		})
-	default:
-		m.setTunnelLocked("direct", "")
-	}
+	m.setTunnelLocked("direct", "")
 }
 
 // stop takes the tunnel down (on exit, so no orphaned ssh stays behind).
@@ -110,6 +105,9 @@ func (m *manager) upstream() (*upstream, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.up == nil {
+		if m.stopSSH != nil {
+			return nil, errors.New("the ssh tunnel is not up")
+		}
 		return nil, errors.New("no server selected: open the claudeguard UI")
 	}
 	return m.up, nil
@@ -195,7 +193,9 @@ type testResult struct {
 func (m *manager) testProfile(ctx context.Context, name string) testResult {
 	res := m.runTest(ctx, name)
 	m.mu.Lock()
-	m.tests[name] = testRecord{testResult: res, At: time.Now()}
+	if _, ok := m.cfg.profile(name); ok {
+		m.tests[name] = testRecord{testResult: res, At: time.Now()}
+	}
 	m.mu.Unlock()
 	return res
 }
@@ -230,7 +230,7 @@ func (m *manager) runTest(ctx context.Context, name string) testResult {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ready := make(chan struct{})
-	exited, stderr, err := startSSH(sctx, p.Target, port, func() { close(ready) })
+	exited, stderr, err := startSSH(sctx, p, port, func() { close(ready) })
 	if err != nil {
 		return testResult{Error: "ssh: " + err.Error()}
 	}

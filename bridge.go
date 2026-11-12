@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -177,11 +178,15 @@ func httpConnect(c net.Conn, target, user, pass string) (net.Conn, error) {
 	if _, err := io.WriteString(c, req+"\r\n"); err != nil {
 		return nil, err
 	}
-	br := bufio.NewReader(c)
+	// The proxy's answer is a status line and a few headers; without a cap a
+	// hostile proxy could feed us an endless header.
+	lr := &io.LimitedReader{R: c, N: 64 << 10}
+	br := bufio.NewReader(lr)
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 	if err != nil {
 		return nil, fmt.Errorf("http proxy CONNECT: %w", err)
 	}
+	lr.N = math.MaxInt64 // the tunnel itself has no limit
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http proxy CONNECT %s: %s", target, resp.Status)
 	}
@@ -211,6 +216,7 @@ type proxyServer struct {
 	name    func() string
 	listen  string
 	ui      http.Handler
+	proof   func(nonce string) string
 	tr      *http.Transport
 	forward *httputil.ReverseProxy
 }
@@ -263,13 +269,22 @@ func (p *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.IsAbs() && p.isSelf(r.URL.Host) {
+		// net/http already took the Host from the absolute URL, so the
+		// checks below see our own name here.
 		r.URL.Scheme, r.URL.Host = "", ""
 		r.Host = p.listen
 	}
 	if !r.URL.IsAbs() {
 		switch {
+		case !p.isSelf(r.Host):
+			http.Error(w, "forbidden host", http.StatusForbidden)
 		case r.URL.Path == "/claudeguard":
 			io.WriteString(w, "claudeguard "+version+" -> "+p.name()+"\n")
+			// Proof that this is the user's own claudeguard and not another
+			// program on the port: only we know the token.
+			if nonce := r.URL.Query().Get("nonce"); nonce != "" && p.proof != nil {
+				io.WriteString(w, "proof "+p.proof(nonce)+"\n")
+			}
 		case p.ui != nil && (r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/") || strings.HasPrefix(r.URL.Path, "/api/")):
 			p.ui.ServeHTTP(w, r)
 		default:
@@ -366,6 +381,7 @@ func runProxy(listen string, m *manager) error {
 	m.onSwitch = ps.tr.CloseIdleConnections
 	m.mu.Unlock()
 	log.Printf("claudeguard %s: http://%s -> %s (settings: http://%s/ui)", version, listen, m.identity(), listen)
-	srv := &http.Server{Handler: ps, ReadHeaderTimeout: 30 * time.Second}
+	ps.proof = func(nonce string) string { return identityProof(m.config().Token, nonce) }
+	srv := &http.Server{Handler: ps, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
 	return srv.Serve(ln)
 }

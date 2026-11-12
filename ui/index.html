@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Claudeguard</title>
+<link rel="icon" type="image/svg+xml" href="/ui/icon.svg">
 <link rel="stylesheet" href="/ui/app.css">
 <script src="/ui/app.js" defer></script>
 </head>
@@ -12,9 +13,7 @@
 <main class="page">
 
 <header class="head">
-  <span class="appicon" aria-hidden="true">
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 2.5 4 5.3v5.4c0 4.2 3 7.5 7 9 4-1.5 7-4.8 7-9V5.3l-7-2.8Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/><path d="m7.8 11 2.2 2.2 4.2-4.4" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-  </span>
+  <img class="appicon" src="/ui/icon.svg" alt="" width="40" height="40">
   <div>
     <h1>Claudeguard</h1>
     <p class="sub">Прокси и kill switch для Claude</p>
@@ -87,6 +86,12 @@
 
 <footer class="footer">
   <span id="ver"></span>
+  <span class="grow"></span>
+  <span id="theme" class="theme" role="radiogroup" aria-label="Тема">
+    <button type="button" role="radio" data-theme="auto">Авто</button>
+    <button type="button" role="radio" data-theme="light">Светлая</button>
+    <button type="button" role="radio" data-theme="dark">Тёмная</button>
+  </span>
   <button id="recheck" class="textbtn" type="button">Проверить защиту</button>
 </footer>
 
@@ -94,19 +99,36 @@
 </main>
 
 <dialog id="sheet" aria-labelledby="sheet-h">
+
+<div id="v-form">
   <div class="sheet-body">
     <h2 id="sheet-h">Новый сервер</h2>
     <div class="seg" role="radiogroup" aria-label="Тип">
-      <button type="button" role="radio" data-kind="ssh">SSH-хост</button>
+      <button type="button" role="radio" data-kind="ssh">SSH-сервер</button>
       <button type="button" role="radio" data-kind="socks5">SOCKS5</button>
       <button type="button" role="radio" data-kind="http">HTTP</button>
+    </div>
+    <div id="ssh-mode" class="choice" role="radiogroup" aria-label="Как подключаться">
+      <button type="button" role="radio" data-mode="new"><span class="radio"></span><span><b>Настроить новый сервер</b><small>Есть адрес и пароль. Claudeguard сам поставит ключ</small></span></button>
+      <button type="button" role="radio" data-mode="config"><span class="radio"></span><span><b>Уже настроен в ~/.ssh/config</b><small id="mode-config-hint">Вход по ключу уже работает</small></span></button>
+    </div>
+    <div id="f-new" class="fieldset">
+      <label for="n-host">Адрес сервера</label>
+      <input id="n-host" class="field" type="text" placeholder="1.2.3.4 или server.example.com" spellcheck="false" autocomplete="off">
+      <div class="row2">
+        <div class="fieldset"><label for="n-user">Пользователь</label><input id="n-user" class="field" type="text" value="root" spellcheck="false" autocomplete="off"></div>
+        <div class="fieldset"><label for="n-port">Порт</label><input id="n-port" class="field" type="text" inputmode="numeric" value="22" autocomplete="off"></div>
+      </div>
+      <label for="n-pass">Пароль</label>
+      <input id="n-pass" class="field" type="password" autocomplete="off">
+      <span class="muted small">Нужен один раз, чтобы поставить на сервер ключ Claudeguard. Пароль нигде не сохраняется.</span>
     </div>
     <div id="f-ssh" class="fieldset">
       <label for="host">SSH-хост</label>
       <input id="host" class="field" type="text" placeholder="vd-poland или user@1.2.3.4" spellcheck="false" autocomplete="off">
       <span id="chips-label" class="muted small">Из ~/.ssh/config:</span>
       <div id="chips" class="chips"></div>
-      <span class="muted small">Нужен вход по ключу без пароля: Claudeguard сам держит туннель ssh -D и переподключает его.</span>
+      <span id="ssh-hint" class="muted small">Нужен вход по ключу без пароля: Claudeguard сам держит туннель ssh -D и переподключает его.</span>
     </div>
     <div id="f-proxy" class="fieldset" hidden>
       <label for="addr">Адрес прокси</label>
@@ -117,7 +139,8 @@
       <label for="pname">Название</label>
       <input id="pname" class="field" type="text" placeholder="Как показывать в списке" autocomplete="off">
     </div>
-    <p id="sheet-err" class="err small" role="alert" hidden></p>
+    <p id="sheet-err" class="warn-strong" role="alert" hidden></p>
+    <p id="sheet-err-hint" class="muted small" hidden></p>
   </div>
   <div class="sheet-actions">
     <button id="sheet-del" class="btn danger" type="button" hidden>Удалить</button>
@@ -125,6 +148,66 @@
     <button id="sheet-cancel" class="btn" type="button">Отменить</button>
     <button id="sheet-ok" class="btn primary" type="button">Добавить</button>
   </div>
+</div>
+
+<div id="v-key" hidden>
+  <div class="sheet-body">
+    <h2>Это тот сервер?</h2>
+    <p id="key-text" class="muted2"></p>
+    <div class="fp"><span id="key-type" class="k"></span><code id="key-fp"></code></div>
+    <div class="fieldset">
+      <span class="muted small">Отпечаток на сервере (в консоли хостера):</span>
+      <code id="key-cmd" class="cmd"></code>
+    </div>
+    <p id="key-err" class="warn-strong" role="alert" hidden></p>
+  </div>
+  <div class="sheet-actions">
+    <button id="key-back" class="btn" type="button">Назад</button>
+    <span class="grow"></span>
+    <button id="key-trust" class="btn primary" type="button">Доверять и подключить</button>
+  </div>
+</div>
+
+<div id="v-run" hidden>
+  <div class="sheet-body">
+    <h2 id="run-h"></h2>
+    <ul id="run-steps" class="steps"></ul>
+    <p id="run-err" class="muted2" role="alert" hidden></p>
+    <p id="run-note" class="muted small">Ключ добавляется в ~/.ssh/authorized_keys на сервере. Остальные ключи там не трогаются.</p>
+  </div>
+  <div class="sheet-actions">
+    <span class="grow"></span>
+    <button id="run-cancel" class="btn" type="button">Отменить</button>
+    <button id="run-retry" class="btn primary" type="button" hidden>Повторить</button>
+  </div>
+</div>
+
+<div id="v-done" hidden>
+  <div class="sheet-body">
+    <div class="banner"><span id="done-badge" class="badge ok" aria-hidden="true"></span>
+      <div><h2 id="done-h"></h2><p id="done-text" class="muted2"></p></div></div>
+    <dl id="done-facts" class="facts"></dl>
+  </div>
+  <div class="sheet-actions">
+    <span class="grow"></span>
+    <button id="done-close" class="btn" type="button">Готово</button>
+    <button id="done-use" class="btn primary" type="button">Пустить Claude через него</button>
+  </div>
+</div>
+
+<div id="v-changed" hidden>
+  <div class="sheet-body">
+    <div class="banner"><span id="changed-badge" class="badge stop" aria-hidden="true"></span>
+      <div><h2>Ключ сервера не тот</h2><p id="changed-text" class="muted2"></p></div></div>
+    <div class="fp"><span class="k">Сейчас сервер показывает</span><code id="changed-fp"></code></div>
+    <p class="muted small">Claudeguard не подключится, пока вы сами не убедитесь, что сервер переустанавливали, и не удалите старый ключ из known_hosts.</p>
+  </div>
+  <div class="sheet-actions">
+    <span class="grow"></span>
+    <button id="changed-ok" class="btn primary" type="button">Понятно</button>
+  </div>
+</div>
+
 </dialog>
 </body>
 </html>

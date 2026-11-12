@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -19,8 +20,20 @@ import (
 type Profile struct {
 	Name   string `json:"name"`
 	Kind   string `json:"kind"`   // ssh | socks5 | http
-	Target string `json:"target"` // ssh host alias, or proxy URL
+	Target string `json:"target"` // ssh host alias or address, or proxy URL
+
+	// Optional for ssh; empty means whatever ~/.ssh/config says.
+	User string `json:"user,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// Managed servers were set up in the panel and log in with
+	// claudeguard's own key instead of the user's.
+	Managed bool `json:"managed,omitempty"`
 }
+
+var sshUserRe = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$`)
+
+// sshTargetRe is an alias, a host, an IP or user@host and nothing else.
+var sshTargetRe = regexp.MustCompile(`^[A-Za-z0-9_\[][A-Za-z0-9._:@\[\]-]{0,252}$`)
 
 func (p Profile) validate() error {
 	if strings.TrimSpace(p.Name) == "" {
@@ -29,8 +42,15 @@ func (p Profile) validate() error {
 	switch p.Kind {
 	case "ssh":
 		// The target becomes an ssh argument: no options, no shell syntax.
-		if p.Target == "" || strings.HasPrefix(p.Target, "-") || strings.ContainsAny(p.Target, " \t\r\n'\"`$;&|<>\\") {
+		// Nor known_hosts syntax: "*", "?", "!" and "," mean patterns and lists there.
+		if !sshTargetRe.MatchString(p.Target) {
 			return fmt.Errorf("недопустимый SSH-хост %q", p.Target)
+		}
+		if p.User != "" && !sshUserRe.MatchString(p.User) {
+			return fmt.Errorf("недопустимое имя пользователя %q", p.User)
+		}
+		if p.Port < 0 || p.Port > 65535 {
+			return fmt.Errorf("недопустимый порт %d", p.Port)
 		}
 	case "socks5", "http":
 		up, err := parseUpstream(p.Target)
@@ -42,6 +62,9 @@ func (p Profile) validate() error {
 		}
 	default:
 		return fmt.Errorf("неизвестный тип %q", p.Kind)
+	}
+	if p.Kind != "ssh" && (p.User != "" || p.Port != 0 || p.Managed) {
+		return errors.New("пользователь и порт задаются только для SSH")
 	}
 	return nil
 }
@@ -162,6 +185,35 @@ func (c *Config) normalize() {
 
 // upstream is where the bridge sends traffic for p. An SSH profile goes
 // through the SOCKS port of its own ssh -D tunnel.
+// redactTarget drops the proxy password from an address: the settings page
+// never needs it back.
+func redactTarget(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.User == nil {
+		return target
+	}
+	if _, has := u.User.Password(); has {
+		u.User = url.User(u.User.Username())
+	}
+	return u.String()
+}
+
+// keepPassword puts the saved password back when an edited address names
+// the same user without one.
+func keepPassword(old, edited string) string {
+	o, err1 := url.Parse(old)
+	e, err2 := url.Parse(edited)
+	if err1 != nil || err2 != nil || o.User == nil || e.User == nil {
+		return edited
+	}
+	pass, has := o.User.Password()
+	if _, typed := e.User.Password(); typed || !has || o.User.Username() != e.User.Username() {
+		return edited
+	}
+	e.User = url.UserPassword(e.User.Username(), pass)
+	return e.String()
+}
+
 func (p Profile) upstream(sshPort int) (*upstream, error) {
 	if p.Kind == "ssh" {
 		return &upstream{scheme: "socks5", addr: "127.0.0.1:" + strconv.Itoa(sshPort)}, nil

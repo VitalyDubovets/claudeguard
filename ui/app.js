@@ -15,7 +15,17 @@ let token = '';
 }
 
 const $ = (id) => document.getElementById(id);
-const KIND = { ssh: 'SSH-хост', socks5: 'SOCKS5-прокси', http: 'HTTP-прокси' };
+
+// The theme follows the system unless the user picked one in the footer.
+let theme = 'auto';
+try { theme = localStorage.getItem('cg-theme') || 'auto'; } catch (e) {}
+function applyTheme() {
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+applyTheme();
+
+const KIND = { ssh: 'SSH-сервер', socks5: 'SOCKS5-прокси', http: 'HTTP-прокси' };
 const LINK = { ssh: 'SSH-туннель', socks5: 'SOCKS5', http: 'HTTP-прокси' };
 
 const ICON = {
@@ -42,8 +52,8 @@ let fwError = '';
 
 class AuthError extends Error {}
 
-async function api(path, body) {
-  const opts = { headers: { 'X-Claudeguard-Token': token } };
+async function api(path, body, signal) {
+  const opts = { headers: { 'X-Claudeguard-Token': token }, signal };
   if (body !== undefined) {
     opts.method = 'POST';
     opts.headers['Content-Type'] = 'application/json';
@@ -52,7 +62,11 @@ async function api(path, body) {
   const r = await fetch(path, opts);
   const data = await r.json().catch(() => ({}));
   if (r.status === 401) throw new AuthError(data.error || 'нет доступа');
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) {
+    const err = new Error(data.error || r.statusText);
+    err.step = data.step;
+    throw err;
+  }
   return data;
 }
 
@@ -251,10 +265,12 @@ function renderRoute(p, broken) {
     : `Маршрут: Claude, ${here}, ${LINK[p.kind]}, ${p.name}, Anthropic`);
 }
 
+const UNTRUSTED = /Host key verification failed/i;
+
 // sshReason turns common ssh failures into something a person can act on.
 function sshReason(err, p) {
   if (!err) return 'Не отвечает';
-  if (/Host key verification failed/i.test(err)) return `Ключ хоста не подтверждён: один раз выполните ssh ${p.target}`;
+  if (UNTRUSTED.test(err)) return 'Ключ хоста не подтверждён';
   if (/Permission denied/i.test(err)) return 'Нет входа по ключу';
   if (/Could not resolve hostname/i.test(err)) return 'Хост не найден';
   return 'Не отвечает';
@@ -289,7 +305,11 @@ function renderServers() {
     check.innerHTML = ICON.check;
     const names = el('span', 'names');
     names.append(el('span', 'name', p.name));
-    const sub = p.kind === 'ssh' && p.target === p.name ? KIND.ssh : `${KIND[p.kind]}, ${hideAuth(p.target)}`;
+    let sub = `${KIND[p.kind]}, ${hideAuth(p.target)}`;
+    if (p.kind === 'ssh') {
+      const where = (p.user ? p.user + '@' : '') + p.target + (p.port ? ':' + p.port : '');
+      sub = where === p.name ? KIND.ssh : `${KIND.ssh}, ${where}`;
+    }
     names.append(el('span', 'kind', sub));
     pick.append(check, names);
     pick.addEventListener('click', () => { if (p.name !== state.active) activate(p.name); });
@@ -308,6 +328,10 @@ function renderServers() {
 
     row.append(pick, result, testBtn, edit);
     li.append(row);
+    if (p.kind === 'ssh' && err && UNTRUSTED.test(err)) {
+      const box = hostKeyBox(p);
+      if (box) li.append(box);
+    }
     list.append(li);
   }
   $('test-all').hidden = state.profiles.length < 2;
@@ -389,38 +413,128 @@ async function applyFirewall() {
   runCheck();
 }
 
-// --- add / edit sheet ---
+// --- host key of a server already in the list ---
 
-const sheet = { old: null, kind: 'ssh', nameTouched: false };
+const hostKeys = new Map(); // name -> {key, error, hidden}
+
+function hostKeyBox(p) {
+  let hk = hostKeys.get(p.name);
+  if (!hk) {
+    hk = {};
+    hostKeys.set(p.name, hk);
+    api('/api/hostkey', { name: p.name })
+      .then((key) => { hk.key = key; }, (e) => { hk.error = e.message; })
+      .then(render);
+  }
+  if (hk.hidden || (!hk.key && !hk.error)) return null;
+  const box = el('div', 'expand');
+  if (hk.error) {
+    box.append(el('span', 'muted small', hk.error));
+    return box;
+  }
+  if (hk.key.status === 'known') return null;
+  const fp = el('div', 'fp onrow');
+  fp.append(el('span', 'k', `${hk.key.address}, ${keyName(hk.key.key_type)}`), el('code', '', hk.key.fingerprint));
+  box.append(fp);
+  if (hk.key.status === 'changed') {
+    box.append(el('span', 'warn-strong small', 'Сервер отвечает другим ключом, чем раньше. Так бывает после переустановки, но так же выглядит перехват соединения. Claudeguard к нему не подключится.'));
+    return box;
+  }
+  const acts = el('div', 'actions');
+  acts.append(
+    button('Доверять ключу', 'btn primary', async () => {
+      try {
+        await api('/api/trust', { address: hk.key.address, fingerprint: hk.key.fingerprint });
+      } catch (e) { alert(e.message); }
+      hostKeys.delete(p.name);
+      test(p.name);
+    }),
+    button('Не сейчас', 'btn', () => { hk.hidden = true; render(); }),
+  );
+  box.append(acts);
+  return box;
+}
+
+function keyName(type) {
+  return type.replace(/^ssh-/, '').replace(/^ecdsa-sha2-.*/, 'ecdsa').toUpperCase();
+}
+
+// --- add / edit sheet, and the setup of a new SSH server ---
+
+const sheet = { old: null, orig: null, kind: 'ssh', mode: 'new', nameTouched: false, key: null, abort: null, poll: 0, name: '' };
+const VIEWS = ['form', 'key', 'run', 'done', 'changed'];
+const STEPS = ['Ключ хоста подтверждён', 'Вход по паролю', 'Ключ Claudeguard на сервере', 'Сервер пускает туннели', 'Вход по ключу и путь до Anthropic'];
+
+function showView(v) {
+  for (const name of VIEWS) $('v-' + name).hidden = name !== v;
+}
 
 function openSheet(p) {
   sheet.old = p ? p.name : null;
+  sheet.orig = p;
   sheet.kind = p ? p.kind : 'ssh';
+  sheet.mode = 'new';
   sheet.nameTouched = !!p;
   $('sheet-h').textContent = p ? p.name : 'Новый сервер';
-  $('sheet-ok').textContent = p ? 'Сохранить' : 'Добавить';
   $('sheet-del').hidden = !p;
   $('host').value = p && p.kind === 'ssh' ? p.target : '';
   $('addr').value = p && p.kind !== 'ssh' ? p.target : '';
   $('pname').value = p ? p.name : '';
-  $('sheet-err').hidden = true;
+  $('n-host').value = '';
+  $('n-user').value = 'root';
+  $('n-port').value = '22';
+  $('n-pass').value = '';
+  formError('');
+  showView('form');
   renderSheet();
   $('sheet').showModal();
-  (sheet.kind === 'ssh' ? $('host') : $('addr')).focus();
+  focusSheet();
+}
+
+function setupMode() {
+  return !sheet.old && sheet.kind === 'ssh' && sheet.mode === 'new';
+}
+
+function focusSheet() {
+  (setupMode() ? $('n-host') : sheet.kind === 'ssh' ? $('host') : $('addr')).focus();
+}
+
+function formError(text, hint) {
+  $('sheet-err').textContent = text;
+  $('sheet-err').hidden = !text;
+  $('sheet-err-hint').textContent = hint || '';
+  $('sheet-err-hint').hidden = !hint;
 }
 
 function renderSheet() {
   for (const b of document.querySelectorAll('.seg button')) {
     b.setAttribute('aria-checked', String(b.dataset.kind === sheet.kind));
   }
-  $('f-ssh').hidden = sheet.kind !== 'ssh';
+  for (const b of document.querySelectorAll('#ssh-mode button')) {
+    b.setAttribute('aria-checked', String(b.dataset.mode === sheet.mode));
+  }
+  const setup = setupMode();
+  $('ssh-mode').hidden = !!sheet.old || sheet.kind !== 'ssh';
+  $('f-new').hidden = !setup;
+  $('f-ssh').hidden = sheet.kind !== 'ssh' || setup;
   $('f-proxy').hidden = sheet.kind === 'ssh';
+  $('sheet-ok').textContent = sheet.old ? 'Сохранить' : setup ? 'Подключить' : 'Добавить';
   $('addr').placeholder = sheet.kind === 'http' ? 'http://proxy.example.com:3128' : 'socks5://127.0.0.1:1080';
   $('addr-hint').textContent = 'Логин и пароль, если нужны, пишутся в адресе: '
     + (sheet.kind === 'http' ? 'http://логин:пароль@хост:порт' : 'socks5://логин:пароль@хост:порт');
+  const o = sheet.orig;
+  if (o && o.kind === sheet.kind && /\/\/[^@/]+@/.test(o.target)) {
+    $('addr-hint').textContent = 'Пароль сохранён и сюда не выводится. Чтобы сменить его, впишите в адрес: логин:пароль@хост:порт';
+  }
+  $('ssh-hint').textContent = o && o.managed
+    ? `Настроен в Claudeguard: вход по его ключу${o.user ? ', пользователь ' + o.user : ''}${o.port ? ', порт ' + o.port : ''}.`
+    : 'Нужен вход по ключу без пароля: Claudeguard сам держит туннель ssh -D и переподключает его.';
 
   const used = new Set(state.profiles.filter((p) => p.kind === 'ssh' && p.name !== sheet.old).map((p) => p.target));
   const hosts = (state.ssh_hosts || []).filter((h) => !used.has(h));
+  $('mode-config-hint').textContent = hosts.length
+    ? hosts.slice(0, 3).join(', ') + (hosts.length > 3 ? ` и ещё ${hosts.length - 3}` : '')
+    : 'Вход по ключу уже работает';
   const chips = $('chips');
   chips.replaceChildren();
   for (const h of hosts) {
@@ -444,26 +558,198 @@ function sheetProfile() {
   if (!name && target) {
     try { name = new URL(target).hostname; } catch (e) {}
   }
-  return { name, kind, target };
+  const profile = { name, kind, target };
+  // Renaming a server set up here must not lose how to log in to it.
+  const o = sheet.orig;
+  if (o && o.kind === 'ssh' && kind === 'ssh' && o.target === target) {
+    Object.assign(profile, { user: o.user, port: o.port, managed: o.managed });
+  }
+  return profile;
 }
 
 async function saveSheet() {
+  if (setupMode()) return startSetup();
   const profile = sheetProfile();
   if (!profile.target) {
-    $('sheet-err').textContent = sheet.kind === 'ssh' ? 'Укажите SSH-хост.' : 'Укажите адрес прокси.';
-    $('sheet-err').hidden = false;
+    formError(sheet.kind === 'ssh' ? 'Укажите SSH-хост.' : 'Укажите адрес прокси.');
     return;
   }
   try {
     await api('/api/profile', { old: sheet.old || '', profile });
   } catch (e) {
-    $('sheet-err').textContent = e.message;
-    $('sheet-err').hidden = false;
+    formError(e.message);
     return;
   }
   $('sheet').close();
   await refresh();
   test(profile.name);
+}
+
+function setupRequest() {
+  const host = $('n-host').value.trim();
+  return {
+    host,
+    port: Number($('n-port').value.trim() || '22'),
+    user: $('n-user').value.trim() || 'root',
+    name: $('pname').value.trim() || host,
+  };
+}
+
+async function startSetup() {
+  const req = setupRequest();
+  if (!req.host) return formError('Укажите адрес сервера.');
+  if (!Number.isInteger(req.port) || req.port < 1 || req.port > 65535) return formError('Порт должен быть числом от 1 до 65535.');
+  if (!$('n-pass').value) return formError('Введите пароль.');
+  if (state.profiles.some((p) => p.name === req.name)) return formError(`Сервер «${req.name}» уже есть. Задайте другое название.`);
+  formError('');
+  sheet.name = req.name;
+  const ok = $('sheet-ok');
+  ok.disabled = true;
+  ok.textContent = 'Проверяю сервер…';
+  let key;
+  try {
+    // No name: with one, the server looks the host up among saved servers.
+    key = await api('/api/hostkey', { host: req.host, port: req.port, user: req.user });
+  } catch (e) {
+    formError(e.message);
+    return;
+  } finally {
+    ok.disabled = false;
+    renderSheet();
+  }
+  sheet.key = key;
+  if (key.status === 'known') return runSetup();
+  if (key.status === 'changed') {
+    $('changed-badge').innerHTML = ICON.warn;
+    $('changed-text').textContent = `${req.host} отвечает другим ключом, чем раньше. Так бывает после переустановки сервера, но так же выглядит и перехват соединения.`;
+    $('changed-fp').textContent = key.fingerprint;
+    showView('changed');
+    $('changed-ok').focus();
+    return;
+  }
+  $('key-text').textContent = `Claudeguard подключается к ${req.host} впервые. Сверьте отпечаток ключа с тем, что показывает сам сервер. Если они совпадают, соединение никто не подменил.`;
+  $('key-type').textContent = `${keyName(key.key_type)}, порт ${req.port}`;
+  $('key-fp').textContent = key.fingerprint;
+  $('key-cmd').textContent = `ssh-keygen -lf /etc/ssh/ssh_host_${keyName(key.key_type).toLowerCase()}_key.pub`;
+  $('key-err').hidden = true;
+  showView('key');
+  $('key-trust').focus();
+}
+
+async function trustAndSetup() {
+  $('key-trust').disabled = true;
+  try {
+    await api('/api/trust', { address: sheet.key.address, fingerprint: sheet.key.fingerprint });
+  } catch (e) {
+    $('key-err').textContent = e.message;
+    $('key-err').hidden = false;
+    return;
+  } finally {
+    $('key-trust').disabled = false;
+  }
+  runSetup();
+}
+
+// renderSteps draws the checklist: `done` steps are finished, the next one
+// is either running or, with failed set, the one that went wrong.
+function renderSteps(done, failed) {
+  const list = $('run-steps');
+  list.replaceChildren();
+  STEPS.forEach((label, i) => {
+    const cls = i < done ? 'done' : i > done ? 'wait' : failed ? 'fail' : 'busy';
+    const li = el('li', cls);
+    const dot = el('span', 'dot');
+    if (cls === 'done') dot.innerHTML = ICON.check;
+    if (cls === 'fail') dot.innerHTML = ICON.warn;
+    li.append(dot, el('span', '', label));
+    list.append(li);
+  });
+}
+
+function stopSetup() {
+  clearInterval(sheet.poll);
+  sheet.poll = 0;
+  if (sheet.abort) sheet.abort.abort();
+  sheet.abort = null;
+}
+
+async function runSetup() {
+  const req = Object.assign(setupRequest(), { password: $('n-pass').value });
+  $('run-h').textContent = `Настраиваю ${req.name}`;
+  $('run-err').hidden = true;
+  $('run-note').hidden = false;
+  $('run-retry').hidden = true;
+  $('run-cancel').textContent = 'Отменить';
+  $('sheet').setAttribute('aria-busy', 'true');
+  let done = 1;
+  renderSteps(done);
+  showView('run');
+  stopSetup();
+  const abort = sheet.abort = new AbortController();
+  sheet.poll = setInterval(async () => {
+    try {
+      const { step } = await api('/api/setup');
+      if (sheet.abort === abort && step + 1 > done) { done = step + 1; renderSteps(done); }
+    } catch (e) {}
+  }, 400);
+  let res, err;
+  try {
+    res = await api('/api/setup', req, abort.signal);
+  } catch (e) {
+    err = e;
+  }
+  if (sheet.abort !== abort) return; // cancelled or closed meanwhile
+  stopSetup();
+  $('sheet').removeAttribute('aria-busy');
+  if (err) return setupFailed(err);
+  $('n-pass').value = '';
+  await refresh(true);
+  setupDone(res);
+}
+
+function setupFailed(err) {
+  const step = err.step || 0;
+  if (step === 0 && /^пароль не подошёл/i.test(err.message)) {
+    const [head, ...rest] = err.message.split('. ');
+    showView('form');
+    formError(head.charAt(0).toUpperCase() + head.slice(1) + '.', rest.join('. '));
+    $('n-pass').value = '';
+    $('n-pass').focus();
+    return;
+  }
+  renderSteps(step + 1, true);
+  $('run-err').textContent = err.message.charAt(0).toUpperCase() + err.message.slice(1) + '.';
+  $('run-err').hidden = false;
+  $('run-note').hidden = true;
+  $('run-retry').hidden = false;
+  $('run-cancel').textContent = 'Назад';
+  $('run-retry').focus();
+}
+
+function setupDone(res) {
+  const t = res.test || {};
+  const facts = $('done-facts');
+  facts.replaceChildren();
+  const fact = (k, v) => facts.append(el('dt', '', k), el('dd', '', v));
+  const p = state.profiles.find((x) => x.name === res.name) || {};
+  if (t.ok) {
+    $('done-badge').className = 'badge ok';
+    $('done-badge').innerHTML = ICON.ok;
+    $('done-h').textContent = `${res.name} работает`;
+    $('done-text').textContent = 'Сервер добавлен в список. Пароль больше не нужен: дальше Claudeguard входит по своему ключу.';
+    if (t.exit_ip) fact('IP выхода', t.exit_ip);
+    fact('Отклик до Anthropic', `${t.latency_ms} мс`);
+  } else {
+    $('done-badge').className = 'badge warn';
+    $('done-badge').innerHTML = ICON.warn;
+    $('done-h').textContent = `${res.name} добавлен, но проверка не прошла`;
+    $('done-text').textContent = 'Ключ на сервере стоит, но запрос к Anthropic через туннель не прошёл. Попробуйте «Проверить» в списке серверов.';
+    fact('Ошибка', t.error || 'нет ответа');
+  }
+  fact('Вход', `${p.user || 'root'}, ключ Claudeguard`);
+  $('done-use').hidden = !t.ok || state.active === res.name;
+  showView('done');
+  ($('done-use').hidden ? $('done-close') : $('done-use')).focus();
 }
 
 async function deleteFromSheet() {
@@ -476,9 +762,24 @@ async function deleteFromSheet() {
   act(() => api('/api/delete', { name }));
 }
 
+function renderTheme() {
+  for (const b of document.querySelectorAll('#theme button')) {
+    b.setAttribute('aria-checked', String(b.dataset.theme === theme));
+  }
+}
+
 // --- wiring ---
 
 document.addEventListener('DOMContentLoaded', () => {
+  renderTheme();
+  for (const b of document.querySelectorAll('#theme button')) {
+    b.addEventListener('click', () => {
+      theme = b.dataset.theme;
+      try { localStorage.setItem('cg-theme', theme); } catch (e) {}
+      applyTheme();
+      renderTheme();
+    });
+  }
   if (!token) return showNoAuth();
 
   $('add').addEventListener('click', () => openSheet(null));
@@ -490,19 +791,34 @@ document.addEventListener('DOMContentLoaded', () => {
   $('fw-apply').addEventListener('click', applyFirewall);
 
   for (const b of document.querySelectorAll('.seg button')) {
-    b.addEventListener('click', () => { sheet.kind = b.dataset.kind; $('sheet-err').hidden = true; renderSheet(); });
+    b.addEventListener('click', () => { sheet.kind = b.dataset.kind; formError(''); renderSheet(); });
+  }
+  for (const b of document.querySelectorAll('#ssh-mode button')) {
+    b.addEventListener('click', () => { sheet.mode = b.dataset.mode; formError(''); renderSheet(); focusSheet(); });
   }
   $('host').addEventListener('input', () => {
     if (!sheet.nameTouched) $('pname').value = $('host').value.trim();
     renderSheet();
   });
+  $('n-host').addEventListener('input', () => {
+    if (!sheet.nameTouched) $('pname').value = $('n-host').value.trim();
+  });
   $('pname').addEventListener('input', () => { sheet.nameTouched = $('pname').value.trim() !== ''; });
   $('sheet-cancel').addEventListener('click', () => $('sheet').close());
   $('sheet-ok').addEventListener('click', saveSheet);
   $('sheet-del').addEventListener('click', deleteFromSheet);
-  $('sheet').addEventListener('keydown', (e) => {
+  $('v-form').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); saveSheet(); }
   });
+  $('key-back').addEventListener('click', () => { showView('form'); focusSheet(); });
+  $('key-trust').addEventListener('click', trustAndSetup);
+  $('run-cancel').addEventListener('click', () => { stopSetup(); showView('form'); focusSheet(); });
+  $('run-retry').addEventListener('click', runSetup);
+  $('done-close').addEventListener('click', () => $('sheet').close());
+  $('done-use').addEventListener('click', () => { $('sheet').close(); activate(sheet.name); });
+  $('changed-ok').addEventListener('click', () => { showView('form'); focusSheet(); });
+  // However the sheet closes, the password and a running setup go with it.
+  $('sheet').addEventListener('close', () => { stopSetup(); $('n-pass').value = ''; });
 
   refresh().then(runCheck);
   setInterval(refresh, 2000);
