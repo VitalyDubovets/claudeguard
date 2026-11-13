@@ -256,13 +256,40 @@ enable / disable         только правила файрвола (admin)
 ## Сборка
 
 ```bash
+go build ./cmd/claudeguard   # бинарник для своей системы
 go test ./...
-./build.sh                # все установщики и пакеты в dist/
-go run ./tools/mkicon     # перерисовать значки в icons/
+./build.sh                   # все установщики и пакеты в dist/
+go run ./tools/mkicon        # перерисовать значки в internal/icons/img/
 ```
 
 `build.sh` запускается на Mac с Xcode Command Line Tools: значку в строке меню нужен cgo, а `.dmg` собирает `hdiutil`. Windows и Linux собираются без cgo. Пакеты `.deb`, `.rpm` и Arch делает [nfpm](https://nfpm.goreleaser.com/), значок в `.exe` вшивает `rsrc`; оба скачиваются через `go run`.
 
-Панель (`ui/`) встраивается в бинарник через `go:embed`, отдельно ничего ставить не нужно. Готовые бинарники лежат в Releases.
+Панель (`internal/panel/ui/`) встраивается в бинарник через `go:embed`, отдельно ничего ставить не нужно. Готовые бинарники лежат в Releases.
+
+### Как устроен код
+
+```
+cmd/claudeguard/     точка входа: вызывает cli.Main
+internal/
+  cli/               команды и их флаги; здесь пакеты соединяются друг с другом
+  tray/              значок в строке меню: отдельный процесс, клиент API панели
+  panel/             страница настроек: встроенный веб-интерфейс и JSON API
+  proxy/             локальный HTTP-прокси и менеджер активного сервера
+  platform/          всё, что различается между macOS, Windows и Linux:
+                     установка служб и ярлыков, права администратора, диалоги, окно
+  tunnel/            SSH: туннель ssh -D, настройка нового сервера, ключи хостов
+  firewall/          kill switch: правила pf, nftables/iptables, Windows Firewall
+  browser/           PAC-файл и системная настройка прокси для браузеров
+  claudecode/        правка ~/.claude/settings.json
+  config/            конфиг: серверы, активный сервер, адрес прокси
+  icons/             встроенные значки
+  sysutil/           запуск системных утилит, копирование файлов, порты
+  version/           номер версии
+  testutil/          общее для тестов разных пакетов
+packaging/           Info.plist, nfpm.yaml, .desktop
+tools/mkicon/        рисует значки
+```
+
+Зависимости идут только сверху вниз: `cli` знает обо всех, `panel` — о `proxy`, `platform` и ниже, `proxy` — о `tunnel` и `config`, а `config`, `sysutil`, `icons` и `version` не зависят ни от кого. Файлы с суффиксом `_darwin`, `_linux`, `_windows` — реализации одного и того же для разных систем, `_other` — заглушки для остальных.
 
 Макет панели в Claude Design: https://claude.ai/artifact/3bjRyRajb78edZDhGEPKgm

@@ -1,6 +1,6 @@
 // mkicon draws the claudeguard icons and writes them as .icns, .ico and
 // .png: go run ./tools/mkicon. Plain stdlib, so the icons are reproducible
-// on any machine; icons/*.svg hold the same drawing for the web.
+// on any machine; internal/icons/img/*.svg hold the same drawing for the web.
 package main
 
 import (
@@ -220,7 +220,7 @@ func ico(pngs map[int][]byte) []byte {
 }
 
 func main() {
-	dir := "icons"
+	dir := filepath.Join("internal", "icons", "img")
 	for file, on := range map[string]bool{"menubar.png": true, "menubar-off.png": false} {
 		if err := os.WriteFile(filepath.Join(dir, file), pngBytes(renderTray(on, 64)), 0o644); err != nil {
 			log.Fatal(err)

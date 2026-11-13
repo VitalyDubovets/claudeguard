@@ -1,4 +1,4 @@
-module claudeguard
+module github.com/VitalyDubovets/claudeguard
 
 go 1.26.0
 

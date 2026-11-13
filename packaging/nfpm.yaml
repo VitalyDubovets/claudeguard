@@ -19,7 +19,7 @@ contents:
       mode: 0755
   - src: packaging/claudeguard.desktop
     dst: /usr/share/applications/claudeguard.desktop
-  - src: icons/claudeguard.png
+  - src: internal/icons/img/claudeguard.png
     dst: /usr/share/icons/hicolor/256x256/apps/claudeguard.png
 scripts:
   preremove: packaging/preremove.sh
