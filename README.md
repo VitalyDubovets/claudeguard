@@ -118,7 +118,7 @@ tar xzf claudeguard_*_linux_amd64.tar.gz
 Работает на всех системах и принимает параметры:
 
 ```bash
-claudeguard install --ssh vd-poland --allow-tunnels
+claudeguard install --ssh my-server --allow-tunnels
 ```
 
 `--ssh HOST` добавляет сервер и делает его активным. Для SSH-сервера claudeguard сам держит `ssh -N -D 127.0.0.1:<свободный порт> HOST`: поднимает при старте и перезапускает после сна, смены сети или обрыва. Нужен вход по ключу без интерактивного пароля (`BatchMode=yes`). Ключ хоста должен быть подтверждён: либо он уже есть в `known_hosts`, либо его подтверждают в панели (см. ниже). Туннель всегда идёт с `StrictHostKeyChecking=yes`, что бы ни стояло в `~/.ssh/config`. Если прокси уже есть, вместо `--ssh` укажи `--upstream socks5://host:port` или `--upstream http://host:port`. Можно не указывать ничего и добавить серверы потом в панели.
@@ -189,8 +189,8 @@ claudeguard status
 ```
 
 ```
-server:          vd-poland (ssh vd-poland)
-local proxy:     http://127.0.0.1:41080 running (claudeguard 0.3.0 -> vd-poland)
+server:          my-server (ssh my-server)
+local proxy:     http://127.0.0.1:41080 running (claudeguard 0.3.0 -> my-server)
 firewall rules:  installed
 via proxy:       ok (api.anthropic.com reachable through the proxy)
 direct IPv4:     blocked/unreachable (connection refused)

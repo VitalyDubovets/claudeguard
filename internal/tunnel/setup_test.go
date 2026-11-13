@@ -239,7 +239,7 @@ func TestSSHTargetArgs(t *testing.T) {
 	if args[len(args)-1] != "1.2.3.4" {
 		t.Fatalf("target must come last: %q", got)
 	}
-	if strings.Contains(strings.Join(sshTargetArgs(config.Profile{Kind: "ssh", Target: "vd-poland"}), " "), "IdentitiesOnly") {
+	if strings.Contains(strings.Join(sshTargetArgs(config.Profile{Kind: "ssh", Target: "my-server"}), " "), "IdentitiesOnly") {
 		t.Fatal("hosts from ~/.ssh/config keep the user's keys")
 	}
 	if (config.Profile{Name: "x", Kind: "ssh", Target: "h", User: "-oProxyCommand=x"}).Validate() == nil {
@@ -297,13 +297,13 @@ func TestHostKeyAlgosFollowKnownKey(t *testing.T) {
 }
 
 func TestSSHArgs(t *testing.T) {
-	args := strings.Join(sshArgs(config.Profile{Kind: "ssh", Target: "vd-poland"}, 41081), " ")
+	args := strings.Join(sshArgs(config.Profile{Kind: "ssh", Target: "my-server"}, 41081), " ")
 	for _, want := range []string{"-D 127.0.0.1:41081", "BatchMode=yes", "ControlMaster=no", "ControlPath=none"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("ssh args lack %q: %s", want, args)
 		}
 	}
-	if !strings.HasSuffix(args, "vd-poland") {
+	if !strings.HasSuffix(args, "my-server") {
 		t.Fatalf("ssh args: %s", args)
 	}
 }

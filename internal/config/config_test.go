@@ -18,9 +18,9 @@ func TestParseUpstream(t *testing.T) {
 }
 
 func TestNormalizeMigratesLegacyConfig(t *testing.T) {
-	c := Config{SSHHost: "vd-poland"}
+	c := Config{SSHHost: "my-server"}
 	c.Normalize()
-	if len(c.Profiles) != 1 || c.Active != "vd-poland" || c.Profiles[0].Kind != "ssh" || c.SSHHost != "" {
+	if len(c.Profiles) != 1 || c.Active != "my-server" || c.Profiles[0].Kind != "ssh" || c.SSHHost != "" {
 		t.Fatalf("%+v", c)
 	}
 	if c.Listen != defaultListen || len(c.Token) != 32 {
@@ -40,7 +40,7 @@ func TestNormalizeMigratesLegacyConfig(t *testing.T) {
 
 func TestProfileValidate(t *testing.T) {
 	good := []Profile{
-		{Name: "p", Kind: "ssh", Target: "vd-poland"},
+		{Name: "p", Kind: "ssh", Target: "my-server"},
 		{Name: "p", Kind: "ssh", Target: "root@1.2.3.4"},
 		{Name: "p", Kind: "socks5", Target: "socks5://127.0.0.1:1080"},
 		{Name: "p", Kind: "http", Target: "http://u:p@proxy:3128"},
@@ -91,7 +91,7 @@ func TestUpsertRemove(t *testing.T) {
 
 func TestSSHTargetCharset(t *testing.T) {
 	for target, ok := range map[string]bool{
-		"vd-poland": true, "root@1.2.3.4": true, "my_host.example.com": true, "[2001:db8::1]": true,
+		"my-server": true, "root@1.2.3.4": true, "my_host.example.com": true, "[2001:db8::1]": true,
 		"*.example.com": false, "victim.example,x.attacker.net": false, "!host": false, "-oProxyCommand=x": false, "a b": false, "": false,
 	} {
 		err := Profile{Name: "n", Kind: "ssh", Target: target}.Validate()
