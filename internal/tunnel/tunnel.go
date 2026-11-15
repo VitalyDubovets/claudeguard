@@ -69,7 +69,7 @@ func (t *tailBuffer) String() string {
 // exit error.
 func Start(ctx context.Context, p config.Profile, port int, ready func()) (<-chan error, fmt.Stringer, error) {
 	stderr := &tailBuffer{}
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs(p, port)...)
+	cmd := exec.CommandContext(ctx, sshBin(), sshArgs(p, port)...)
 	cmd.Stderr = stderr
 	sysutil.HideChildWindow(cmd)
 	if err := cmd.Start(); err != nil {

@@ -38,8 +38,19 @@ func installDir() string {
 
 func installedExe() string { return filepath.Join(installDir(), "claudeguard.exe") }
 
+// stopOtherInstances ends every other claudeguard process: the installed
+// claudeguard.exe and the settings window a freshly downloaded
+// ClaudeguardSetup-<version>.exe keeps open. A killed proxy cannot stop its
+// ssh tunnel itself, so its ssh children go first.
 func stopOtherInstances() {
-	_, _ = sysutil.PowerShell(fmt.Sprintf("Get-Process claudeguard -ErrorAction SilentlyContinue | Where-Object Id -ne %d | Stop-Process -Force", os.Getpid()))
+	_, _ = sysutil.PowerShell(fmt.Sprintf(`$p = @(Get-Process -Name 'claudeguard', 'ClaudeguardSetup*' -ErrorAction SilentlyContinue | Where-Object Id -ne %d)
+$ids = @($p | ForEach-Object Id)
+if ($ids) {
+  Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $ids -contains $_.ParentProcessId } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  $p | Stop-Process -Force -ErrorAction SilentlyContinue
+}`, os.Getpid()))
 }
 
 // UserInstall is the user's half: the proxy as a background service and,
@@ -57,7 +68,7 @@ func UserInstall(proxyURL string, launcher bool) error {
 		return err
 	}
 	cmdline := fmt.Sprintf(`"%s" serve --detach`, installedExe())
-	if out, err := exec.Command("reg", "add", runKey, "/v", runValue, "/t", "REG_SZ", "/d", cmdline, "/f").CombinedOutput(); err != nil {
+	if out, err := exec.Command(sysutil.SysTool("reg.exe"), "add", runKey, "/v", runValue, "/t", "REG_SZ", "/d", cmdline, "/f").CombinedOutput(); err != nil {
 		return fmt.Errorf("reg add: %w\n%s", err, out)
 	}
 	start := exec.Command(installedExe(), "serve", "--detach")
@@ -96,7 +107,7 @@ foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFold
 		{"NoModify", "REG_DWORD", "1"},
 		{"NoRepair", "REG_DWORD", "1"},
 	} {
-		_ = exec.Command("reg", "add", uninstallKey, "/v", v[0], "/t", v[1], "/d", v[2], "/f").Run()
+		_ = exec.Command(sysutil.SysTool("reg.exe"), "add", uninstallKey, "/v", v[0], "/t", v[1], "/d", v[2], "/f").Run()
 	}
 	return nil
 }
@@ -104,7 +115,7 @@ foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFold
 // TrayInstall starts the tray icon now and at every logon.
 func TrayInstall() error {
 	cmdline := fmt.Sprintf(`"%s" tray --detach`, installedExe())
-	if out, err := exec.Command("reg", "add", runKey, "/v", trayRunValue, "/t", "REG_SZ", "/d", cmdline, "/f").CombinedOutput(); err != nil {
+	if out, err := exec.Command(sysutil.SysTool("reg.exe"), "add", runKey, "/v", trayRunValue, "/t", "REG_SZ", "/d", cmdline, "/f").CombinedOutput(); err != nil {
 		return fmt.Errorf("reg add: %w\n%s", err, out)
 	}
 	if out, err := exec.Command(installedExe(), "tray", "--detach").CombinedOutput(); err != nil {
@@ -117,13 +128,13 @@ func TrayInstall() error {
 // UserUninstall removes what UserInstall and TrayInstall set up. The notes
 // are what is left for the user to do by hand.
 func UserUninstall() (notes []string, err error) {
-	_ = exec.Command("reg", "delete", runKey, "/v", runValue, "/f").Run()
-	_ = exec.Command("reg", "delete", runKey, "/v", trayRunValue, "/f").Run()
+	_ = exec.Command(sysutil.SysTool("reg.exe"), "delete", runKey, "/v", runValue, "/f").Run()
+	_ = exec.Command(sysutil.SysTool("reg.exe"), "delete", runKey, "/v", trayRunValue, "/f").Run()
 	stopOtherInstances()
 	_, _ = sysutil.PowerShell(fmt.Sprintf(`foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
   Remove-Item -ErrorAction SilentlyContinue (Join-Path $d %s), (Join-Path $d %s)
 }`, firewall.PSQuote(shortcutName), firewall.PSQuote(uiShortcut)))
-	_ = exec.Command("reg", "delete", uninstallKey, "/f").Run()
+	_ = exec.Command(sysutil.SysTool("reg.exe"), "delete", uninstallKey, "/f").Run()
 	// A running program cannot delete its own file: leave that to a command
 	// that outlives this process by a few seconds.
 	if dir := installDir(); filepath.IsAbs(dir) {
@@ -132,7 +143,7 @@ func UserUninstall() (notes []string, err error) {
 		if data, err := config.File("webview"); err == nil {
 			line += ` & rmdir /s /q "` + data + `" & rmdir "` + filepath.Dir(data) + `"`
 		}
-		cmd := exec.Command("cmd.exe")
+		cmd := exec.Command(sysutil.SysTool("cmd.exe"))
 		const createNoWindow = 0x08000000
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			CmdLine:       line,

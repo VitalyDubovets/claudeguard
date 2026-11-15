@@ -147,6 +147,14 @@ func (m *Manager) Update(fn func(*config.Config) error) error {
 	if err := m.save(next); err != nil {
 		return err
 	}
+	// A test result belongs to the server it was made for: once the profile
+	// is gone or points elsewhere, the result is stale.
+	for name := range m.tests {
+		was, _ := m.cfg.Find(name)
+		if now, ok := next.Find(name); !ok || now != was {
+			delete(m.tests, name)
+		}
+	}
 	prevActive, _ := m.cfg.Find(m.cfg.Active)
 	newActive, _ := next.Find(next.Active)
 	m.cfg = next

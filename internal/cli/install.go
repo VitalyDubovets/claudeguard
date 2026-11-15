@@ -33,7 +33,7 @@ type installPlan struct {
 func install(cfg config.Config, fw firewall.Options, plan installPlan) error {
 	fmt.Println("1/3 Firewall kill switch (needs admin rights)...")
 	if err := plan.elevate(append([]string{"system-install"}, fw.Args()...)); err != nil {
-		return fmt.Errorf("system part failed: %w", err)
+		return fmt.Errorf("%w: %w", errSystemPart, err)
 	}
 	fmt.Println("2/3 Background proxy, launcher...")
 	if err := platform.UserInstall(cfg.ProxyURL(), plan.launcher); err != nil {
@@ -52,6 +52,10 @@ func install(cfg config.Config, fw firewall.Options, plan installPlan) error {
 	}
 	return nil
 }
+
+// errSystemPart marks an install that stopped before anything was changed:
+// the admin half did not run.
+var errSystemPart = errors.New("system part failed")
 
 func runInstall(args []string) error {
 	if sysutil.IsRoot() {
@@ -76,6 +80,7 @@ func runInstall(args []string) error {
 	if err != nil {
 		return err
 	}
+	prevTunnels, prevExtra := cfg.AllowTunnels, cfg.ExtraBlock
 	cfg.AllowTunnels, cfg.ExtraBlock = fw.AllowTunnels, fw.Extra
 	if p, ok, err := config.ProfileFromFlags(*sshHost, *upstreamURL); err != nil {
 		return err
@@ -91,6 +96,11 @@ func runInstall(args []string) error {
 
 	plan := installPlan{launcher: !*noLauncher, tray: !*noTray, settings: !*noSettings, elevate: platform.Elevate}
 	if err := install(cfg, fw, plan); err != nil {
+		if errors.Is(err, errSystemPart) {
+			// The rules were not applied: the config must not say they were.
+			cfg.AllowTunnels, cfg.ExtraBlock = prevTunnels, prevExtra
+			_ = config.Save(cfg)
+		}
 		return err
 	}
 	fmt.Println("\nDone. Restart Claude with the 'Claude via Proxy' launcher (or `claudeguard launch`).")

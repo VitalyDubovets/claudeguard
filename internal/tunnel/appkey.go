@@ -104,7 +104,7 @@ func ForgetServerKeys(cfg config.Config) (left []string) {
 			"-o", "ControlMaster=no", "-o", "ControlPath=none",
 			"-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
 		}
-		cmd := exec.CommandContext(ctx, "ssh", append(append(args, sshTargetArgs(p)...), removeKeyScript)...)
+		cmd := exec.CommandContext(ctx, sshBin(), append(append(args, sshTargetArgs(p)...), removeKeyScript)...)
 		sysutil.HideChildWindow(cmd)
 		cmd.Stdin = strings.NewReader(appKeyLine(signer.PublicKey()))
 		if err := cmd.Run(); err != nil {

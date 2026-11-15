@@ -11,12 +11,39 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/VitalyDubovets/claudeguard/internal/config"
 	"github.com/VitalyDubovets/claudeguard/internal/sysutil"
 )
+
+// sshBin is the ssh client to run. On Windows the one found in PATH may be
+// unable to start: a process launched from a browser inherits the
+// "prefer System32 images" mitigation, and a third-party OpenSSH then loads
+// the system libcrypto.dll instead of its own and dies with 0xc0000139. The
+// OpenSSH that ships with Windows keeps its DLLs in System32 and still works,
+// so it is the fallback when the PATH one does not run.
+var sshBin = sync.OnceValue(func() string {
+	if runtime.GOOS != "windows" {
+		return "ssh"
+	}
+	probe := exec.Command("ssh", "-V")
+	sysutil.HideChildWindow(probe)
+	if probe.Run() == nil {
+		return "ssh"
+	}
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	system := filepath.Join(root, "System32", "OpenSSH", "ssh.exe")
+	if _, err := os.Stat(system); err == nil {
+		return system
+	}
+	return "ssh"
+})
 
 // sshPath is how a path goes into an ssh -o option: quoted (Application
 // Support has a space), with forward slashes on Windows.
@@ -80,7 +107,7 @@ func (d sshDest) hostPort() string {
 }
 
 func resolveSSH(ctx context.Context, p config.Profile) (sshDest, error) {
-	cmd := exec.CommandContext(ctx, "ssh", append([]string{"-G"}, sshTargetArgs(p)...)...)
+	cmd := exec.CommandContext(ctx, sshBin(), append([]string{"-G"}, sshTargetArgs(p)...)...)
 	sysutil.HideChildWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {

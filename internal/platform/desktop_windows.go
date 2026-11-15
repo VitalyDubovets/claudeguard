@@ -20,7 +20,7 @@ import (
 func ElevateGUI(args []string) error { return elevateWith(args, true) }
 
 func openBrowser(url string) error {
-	return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	return exec.Command(sysutil.SysTool("rundll32.exe"), "url.dll,FileProtocolHandler", url).Start()
 }
 
 // Elevate re-runs claudeguard through a UAC prompt and waits for it.
@@ -35,18 +35,28 @@ func elevateWith(args []string, hidden bool) error {
 	if hidden {
 		style = " -WindowStyle Hidden"
 	}
-	script := fmt.Sprintf("$p = Start-Process -FilePath %s -ArgumentList %s -Verb RunAs%s -Wait -PassThru; exit $p.ExitCode",
-		firewall.PSQuote(exe), firewall.PSQuote(strings.Join(args, " ")), style)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	// Start-Process throws when the UAC prompt is declined; any other exit
+	// code is the elevated command's own.
+	script := fmt.Sprintf("try { $p = Start-Process -FilePath %s -ArgumentList %s -Verb RunAs%s -Wait -PassThru } catch { exit %d }; exit $p.ExitCode",
+		firewall.PSQuote(exe), firewall.PSQuote(strings.Join(args, " ")), style, uacDeclined)
+	cmd := exec.Command(sysutil.SysTool("powershell.exe"), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if hidden {
 		sysutil.HideChildWindow(cmd)
 	}
 	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == uacDeclined {
+			return errors.New("отменено")
+		}
 		return fmt.Errorf("UAC: %w", err)
 	}
 	return nil
 }
+
+// uacDeclined is the exit code of the elevation script when the user says
+// no in the UAC prompt (ERROR_CANCELLED).
+const uacDeclined = 1223
 
 // Detach starts this binary with args as a background process of its own.
 func Detach(args []string) error {
@@ -63,7 +73,11 @@ func Detach(args []string) error {
 	cmd.Stdout, cmd.Stderr = logf, logf
 	const createNoWindow, detachedProcess = 0x08000000, 0x00000008
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow | detachedProcess}
-	return cmd.Start()
+	err = cmd.Start()
+	// The child has its own handle; ours would stay open for as long as
+	// this process lives.
+	logf.Close()
+	return err
 }
 
 func findClaudeApp() string {

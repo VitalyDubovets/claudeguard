@@ -175,6 +175,9 @@ type hostKeyOffer struct {
 	at  time.Time
 }
 
+// hostKeyOfferTTL is how long a shown key can still be trusted by Take.
+const hostKeyOfferTTL = 10 * time.Minute
+
 // HostKeys remembers the keys servers showed in Inspect, so that Take can
 // hand out exactly the key the user looked at.
 type HostKeys struct {
@@ -188,6 +191,11 @@ func (h *HostKeys) offer(address string, key ssh.PublicKey) {
 	if h.offers == nil {
 		h.offers = map[string]hostKeyOffer{}
 	}
+	for a, o := range h.offers {
+		if time.Since(o.at) > hostKeyOfferTTL {
+			delete(h.offers, a)
+		}
+	}
 	h.offers[address] = hostKeyOffer{key: key, at: time.Now()}
 }
 
@@ -197,7 +205,7 @@ func (h *HostKeys) Take(address, fingerprint string) (ssh.PublicKey, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	o, ok := h.offers[address]
-	if !ok || time.Since(o.at) > 10*time.Minute {
+	if !ok || time.Since(o.at) > hostKeyOfferTTL {
 		return nil, errors.New("ключ устарел, проверьте сервер ещё раз")
 	}
 	if ssh.FingerprintSHA256(o.key) != fingerprint {

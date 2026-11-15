@@ -287,9 +287,22 @@ func Save(c Config) error {
 		return err
 	}
 	data, _ := json.MarshalIndent(c, "", "  ")
-	tmp := p + ".new"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// A temp file of its own: several claudeguard processes save the config,
+	// and a shared name would let one rename the other's half-written file.
+	f, err := os.CreateTemp(filepath.Dir(p), filepath.Base(p)+".*.new")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	tmp := f.Name()
+	_, err = f.Write(append(data, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, p)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }

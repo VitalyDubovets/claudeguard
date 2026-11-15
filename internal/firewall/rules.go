@@ -110,9 +110,12 @@ func windowsFirewallScript(o Options) string {
 		b.WriteString("if (-not $phys) { throw 'no physical network adapters found' }\n")
 		iface = " -InterfaceAlias $phys"
 	}
-	fmt.Fprintf(&b, "Get-NetFirewallRule -Group %s -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n", PSQuote(winRuleGroup))
+	// The new rule goes in before the old ones go out: if it cannot be
+	// created, the script stops here and the previous kill switch stays.
+	fmt.Fprintf(&b, "$old = @(Get-NetFirewallRule -Group %s -ErrorAction SilentlyContinue)\n", PSQuote(winRuleGroup))
 	fmt.Fprintf(&b, "New-NetFirewallRule -DisplayName %s -Group %s -Direction Outbound -Action Block -Profile Any -RemoteAddress @(%s)%s | Out-Null\n",
 		PSQuote(winRuleName), PSQuote(winRuleGroup), strings.Join(addrs, ","), iface)
+	b.WriteString("if ($old) { $old | Remove-NetFirewallRule }\n")
 	b.WriteString("$off = Get-NetFirewallProfile | Where-Object { -not $_.Enabled } | ForEach-Object Name\n")
 	b.WriteString("if ($off) { Write-Warning ('Windows Firewall is OFF for profiles: ' + ($off -join ', ') + '. The kill switch does not work there.') }\n")
 	return b.String()

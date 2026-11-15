@@ -87,7 +87,7 @@ func trayAPI(cfg config.Config, path string, body, out any) error {
 	req.Header.Set(panel.TokenHeader, cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
 	// Never through a proxy: this is our own port on this machine.
-	resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(req)
+	resp, err := (&http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}).Do(req)
 	if err != nil {
 		return err
 	}

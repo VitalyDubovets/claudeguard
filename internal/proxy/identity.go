@@ -99,7 +99,7 @@ func Identify(cfg config.Config) Identity {
 	var nb [16]byte
 	rand.Read(nb[:])
 	nonce := hex.EncodeToString(nb[:])
-	c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	c := http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
 	resp, err := c.Get("http://" + cfg.Listen + "/claudeguard?nonce=" + nonce)
 	if err != nil {
 		return Identity{Owner: Other}

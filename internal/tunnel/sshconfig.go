@@ -6,11 +6,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // SSHConfigHosts lists concrete Host aliases from ~/.ssh/config (and files
 // it includes), for the "add server" suggestions in the UI.
+//
+// The settings page asks every couple of seconds, so the answer is kept for
+// a short while instead of re-reading the files each time.
 func SSHConfigHosts() []string {
+	sshHostsCache.Lock()
+	defer sshHostsCache.Unlock()
+	if sshHostsCache.at.IsZero() || time.Since(sshHostsCache.at) > 10*time.Second {
+		sshHostsCache.hosts, sshHostsCache.at = readSSHConfigHosts(), time.Now()
+	}
+	return append([]string(nil), sshHostsCache.hosts...)
+}
+
+var sshHostsCache struct {
+	sync.Mutex
+	hosts []string
+	at    time.Time
+}
+
+func readSSHConfigHosts() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -18,8 +38,11 @@ func SSHConfigHosts() []string {
 	seen := map[string]bool{}
 	var walk func(path string, depth int)
 	walk = func(path string, depth int) {
+		if depth > 3 {
+			return
+		}
 		f, err := os.Open(path)
-		if err != nil || depth > 3 {
+		if err != nil {
 			return
 		}
 		defer f.Close()

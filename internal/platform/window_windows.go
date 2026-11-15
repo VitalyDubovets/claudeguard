@@ -80,6 +80,8 @@ func OpenPanel() error {
 	cmd := exec.Command(exe, "window")
 	if logf, err := os.OpenFile(filepath.Join(installDir(), "claudeguard.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 		cmd.Stdout, cmd.Stderr = logf, logf
+		// The child gets its own handle at Start; ours is closed on return.
+		defer logf.Close()
 	}
 	const detachedProcess = 0x00000008
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: detachedProcess}

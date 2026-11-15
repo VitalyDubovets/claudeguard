@@ -11,7 +11,7 @@ import (
 const inetKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
 func inetPAC() string {
-	cmd := exec.Command("reg", "query", inetKey, "/v", "AutoConfigURL")
+	cmd := exec.Command(sysutil.SysTool("reg.exe"), "query", inetKey, "/v", "AutoConfigURL")
 	sysutil.HideChildWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -26,9 +26,9 @@ func inetPAC() string {
 }
 
 func inetSet(url string) error {
-	cmd := exec.Command("reg", "delete", inetKey, "/v", "AutoConfigURL", "/f")
+	cmd := exec.Command(sysutil.SysTool("reg.exe"), "delete", inetKey, "/v", "AutoConfigURL", "/f")
 	if url != "" {
-		cmd = exec.Command("reg", "add", inetKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", url, "/f")
+		cmd = exec.Command(sysutil.SysTool("reg.exe"), "add", inetKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", url, "/f")
 	}
 	sysutil.HideChildWindow(cmd)
 	err := cmd.Run()

@@ -237,7 +237,10 @@ function renderStatus() {
       ? `Выход в сеть с ${rec.exit_ip || 'неизвестного адреса'}, отклик ${rec.latency_ms} мс` + (rec.connect_ms ? `, новое соединение ${rec.connect_ms} мс` : '')
       : 'Проверяю, что Anthropic отвечает через этот сервер…';
     const relaunch = button('Перезапустить Claude', 'btn', () => {
-      if (!confirm('Приложение Claude закроется и откроется снова, уже через прокси. Продолжить?')) return;
+      const ask = state.os === 'darwin'
+        ? 'Приложение Claude закроется и откроется снова, уже через прокси. Продолжить?'
+        : 'Claude запустится через прокси. Если приложение уже открыто, сначала закройте его полностью (значок в трее → Quit). Продолжить?';
+      if (!confirm(ask)) return;
       act(() => api('/api/launch', {}));
     });
     relaunch.title = 'Нужно после установки: приложение Claude должно быть запущено через прокси';
@@ -391,7 +394,7 @@ function renderKillSwitch() {
     note.className = 'muted small';
     note.textContent = state.os === 'windows'
       ? 'Windows попросит подтверждение администратора.'
-      : 'macOS попросит пароль администратора. Открытые соединения Claude с Anthropic оборвутся и тут же переподключатся.';
+      : (state.os === 'darwin' ? 'macOS попросит' : 'Система попросит') + ' пароль администратора. Открытые соединения Claude с Anthropic оборвутся и тут же переподключатся.';
   }
 }
 

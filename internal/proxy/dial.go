@@ -25,6 +25,9 @@ func dial(ctx context.Context, u *config.Upstream, target string) (net.Conn, err
 		return nil, fmt.Errorf("upstream proxy %s unreachable: %w", u.Addr, err)
 	}
 	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+	// The handshake reads and writes without ctx: closing the connection is
+	// what ends it when the caller gives up.
+	stop := context.AfterFunc(ctx, func() { c.Close() })
 	var conn net.Conn
 	switch u.Scheme {
 	case "socks5":
@@ -32,6 +35,9 @@ func dial(ctx context.Context, u *config.Upstream, target string) (net.Conn, err
 		conn = c
 	default:
 		conn, err = httpConnect(c, target, u.User, u.Pass)
+	}
+	if !stop() && err == nil {
+		err = ctx.Err()
 	}
 	if err != nil {
 		c.Close()
