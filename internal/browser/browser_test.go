@@ -3,9 +3,12 @@ package browser
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/VitalyDubovets/claudeguard/internal/testutil"
 )
 
 // The PAC file is run by a real JavaScript engine where one is at hand.
@@ -36,6 +39,53 @@ func TestPACFile(t *testing.T) {
 		if got := strings.TrimSpace(string(out)); got != proxy {
 			t.Errorf("%s: got %q, want %q", host, got, proxy)
 		}
+	}
+}
+
+// Keep puts the address back only while the switch is on and nobody else
+// has claimed the setting.
+func TestKeepOnce(t *testing.T) {
+	testutil.Home(t)
+	const ours = "http://127.0.0.1:1/proxy.pac"
+	system := ""
+	writes := 0
+	oldRead, oldOn, oldWrite := readPAC, pacIsOn, writePAC
+	t.Cleanup(func() { readPAC, pacIsOn, writePAC = oldRead, oldOn, oldWrite })
+	readPAC = func(string) (pacState, string, error) {
+		if system == ours {
+			return pacState{}, "", nil
+		}
+		return pacState{"url": system}, system, nil
+	}
+	pacIsOn = func(string) bool { return system == ours }
+	writePAC = func(url string) error { system = url; writes++; return nil }
+
+	// Switch off: a cleared setting is how it should be.
+	if got, _ := keepOnce(ours); got || writes != 0 {
+		t.Fatalf("restored with the switch off")
+	}
+
+	p, err := PrevPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Switch on, setting wiped: put back.
+	if got, err := keepOnce(ours); !got || err != nil || system != ours {
+		t.Fatalf("not restored: got %v, err %v, system %q", got, err, system)
+	}
+	// In place: nothing to do.
+	if got, _ := keepOnce(ours); got || writes != 1 {
+		t.Fatalf("rewrote a setting that was in place")
+	}
+	// Someone else's proxy is left alone.
+	system = "http://other/proxy.pac"
+	if got, _ := keepOnce(ours); got || system != "http://other/proxy.pac" {
+		t.Fatalf("replaced a foreign setting")
 	}
 }
 

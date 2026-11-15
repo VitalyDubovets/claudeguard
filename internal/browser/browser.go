@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -49,6 +50,8 @@ func PrevPath() (string, error) { return config.File("browser.prev.json") }
 // Enable points the system at our PAC file and remembers what was set
 // before. It refuses to replace a proxy setting that is not ours.
 func Enable(url string) error {
+	switchMu.Lock()
+	defer switchMu.Unlock()
 	prev, foreign, err := systemPAC(url)
 	if err != nil {
 		return err
@@ -71,6 +74,8 @@ func Enable(url string) error {
 
 // Disable puts back the setting Enable replaced, if ours is still in place.
 func Disable(url string) error {
+	switchMu.Lock()
+	defer switchMu.Unlock()
 	var prev pacState
 	p, err := PrevPath()
 	if err == nil {
@@ -87,7 +92,55 @@ func Disable(url string) error {
 	return nil
 }
 
-var errNoSystemPAC = errors.New("на этой системе Claudeguard не умеет менять настройки прокси сам")
+// switchMu keeps Keep from putting the setting back halfway through Disable.
+var switchMu sync.Mutex
+
+// The system calls behind Keep, replaced in tests.
+var (
+	readPAC  = systemPAC
+	pacIsOn  = systemPACIs
+	writePAC = setSystemPAC
+)
+
+// Keep puts our PAC address back when something else wiped it while the
+// switch is on. Other proxy tools clear the system proxy as they start or
+// stop, and with the kill switch up that leaves browsers with no way to
+// Claude. A setting someone pointed elsewhere is theirs and stays.
+func Keep(url string, every time.Duration) {
+	for range time.Tick(every) {
+		if restored, err := keepOnce(url); err != nil {
+			log.Printf("browser proxy: could not put the system setting back: %v", err)
+		} else if restored {
+			log.Printf("browser proxy: the system setting was cleared by another program, put back")
+		}
+	}
+}
+
+func keepOnce(url string) (restored bool, err error) {
+	switchMu.Lock()
+	defer switchMu.Unlock()
+	// The snapshot exists exactly while the switch is on.
+	p, err := PrevPath()
+	if err != nil {
+		return false, nil
+	}
+	if _, err := os.Stat(p); err != nil {
+		return false, nil
+	}
+	if pacIsOn(url) {
+		return false, nil
+	}
+	if _, foreign, err := readPAC(url); err != nil || foreign != "" {
+		return false, nil
+	}
+	if err := writePAC(url); err != nil {
+		return false, err
+	}
+	ForgetState()
+	return true, nil
+}
+
+var errNoSystemPAC =errors.New("на этой системе Claudeguard не умеет менять настройки прокси сам")
 
 // pacCache keeps the panel's two-second poll from running system tools
 // every time.

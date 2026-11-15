@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/VitalyDubovets/claudeguard/internal/browser"
 	"github.com/VitalyDubovets/claudeguard/internal/config"
 	"github.com/VitalyDubovets/claudeguard/internal/firewall"
 	"github.com/VitalyDubovets/claudeguard/internal/panel"
@@ -50,6 +51,7 @@ func runServe(args []string) error {
 		time.Sleep(200 * time.Millisecond) // let ssh get its signal
 		os.Exit(0)
 	}()
+	go browser.Keep(browser.PACURL(cfg.Listen), 10*time.Second)
 	return proxy.Run(cfg.Listen, m, panel.NewHandler(m, cfg.Listen))
 }
 
