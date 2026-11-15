@@ -68,6 +68,7 @@ func sshTargetArgs(p config.Profile) []string {
 	}
 	if p.Managed {
 		if key, err := appKeyPath(); err == nil {
+			protectAppKey()
 			a = append(a, "-i", key, "-o", "IdentitiesOnly=yes")
 		}
 	}

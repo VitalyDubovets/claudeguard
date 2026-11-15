@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +23,21 @@ import (
 )
 
 func appKeyPath() (string, error) { return config.File("id_ed25519") }
+
+// protectAppKey repairs the access list of a key made by an earlier
+// version, once per process, before ssh is asked to use it.
+var protectAppKey = sync.OnceFunc(func() {
+	path, err := appKeyPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	if err := protectKey(path); err != nil {
+		log.Printf("ssh key: %v", err)
+	}
+})
 
 // ensureAppKey returns claudeguard's own ed25519 key, creating it once.
 func ensureAppKey() (ssh.PublicKey, error) {
@@ -32,6 +49,9 @@ func ensureAppKey() (ssh.PublicKey, error) {
 		signer, err := ssh.ParsePrivateKey(data)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if err := protectKey(path); err != nil {
+			return nil, err
 		}
 		return signer.PublicKey(), nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -51,6 +71,9 @@ func ensureAppKey() (ssh.PublicKey, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		return nil, err
+	}
+	if err := protectKey(path); err != nil {
 		return nil, err
 	}
 	sshPub, err := ssh.NewPublicKey(pub)

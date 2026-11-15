@@ -83,6 +83,9 @@ func Detach(args []string) error {
 func findClaudeApp() string {
 	local, _ := os.UserCacheDir()
 	for _, p := range []string{
+		// The Store/MSIX build: its files under Program Files\WindowsApps
+		// are not ours to start, the alias Windows makes for it is.
+		filepath.Join(local, "Microsoft", "WindowsApps", "claude-desktop.exe"),
 		filepath.Join(local, "AnthropicClaude", "claude.exe"),
 		filepath.Join(local, "Programs", "Claude", "Claude.exe"),
 		filepath.Join(os.Getenv("ProgramFiles"), "Claude", "Claude.exe"),
@@ -105,7 +108,9 @@ func LaunchClaude(proxyURL, app string) error {
 		return errors.New("Claude desktop app not found; pass --app <path to Claude.exe>")
 	}
 	dir := filepath.Dir(app)
-	out, _ := sysutil.PowerShell(fmt.Sprintf("@(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith(%s, 'OrdinalIgnoreCase') }).Count", firewall.PSQuote(dir+`\`)))
+	// The Store build runs from its package folder, not from where the
+	// alias lives.
+	out, _ := sysutil.PowerShell(fmt.Sprintf(`@(Get-Process | Where-Object { $_.Path -and ($_.Path.StartsWith(%s, 'OrdinalIgnoreCase') -or $_.Path -like '*\WindowsApps\Claude_*\app\Claude.exe') }).Count`, firewall.PSQuote(dir+`\`)))
 	if n, _ := strconv.Atoi(strings.TrimSpace(out)); n > 0 {
 		return errors.New("Claude is already running without the proxy flag; quit it (tray icon > Quit) and launch again")
 	}
