@@ -380,6 +380,15 @@ function renderKillSwitch() {
   const extra = $('extra');
   if (document.activeElement !== extra) extra.value = draft.extra;
 
+  // Networks Anthropic publishes that the rules leave open.
+  const missing = (state.ranges && state.ranges.missing) || [];
+  const pending = missingFrom(draft.extra);
+  $('ranges-row').hidden = missing.length === 0;
+  $('ranges-add').hidden = pending.length === 0;
+  $('ranges-text').textContent = pending.length
+    ? `Kill switch их пока не закрывает: ${missing.join(', ')}. Добавьте их в дополнительные сети и нажмите «Применить».`
+    : `${missing.join(', ')} — в списке ниже. Нажмите «Применить», чтобы правила вступили в силу.`;
+
   const dirty = fwDraft && (fwDraft.allow !== saved.allow || fwDraft.extra.trim() !== saved.extra);
   const needs = dirty || notInstalled || (check && !check.blocked && !state.allow_tunnels);
   $('fw-bar').hidden = !needs && !fwBusy && !fwError;
@@ -430,6 +439,21 @@ async function toggleBrowser() {
   }
   brBusy = false;
   await refresh(true);
+}
+
+function networks(text) {
+  return text.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+// The published networks that are not in the extra list as typed.
+function missingFrom(extra) {
+  const have = networks(extra);
+  return ((state.ranges && state.ranges.missing) || []).filter((m) => !have.includes(m));
+}
+
+function addMissingRanges() {
+  const extra = (fwDraft || { extra: (state.extra_block || []).join(', ') }).extra;
+  editDraft({ extra: networks(extra).concat(missingFrom(extra)).join(', ') });
 }
 
 function editDraft(change) {
@@ -839,6 +863,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('tun').addEventListener('click', () => editDraft({ allow: $('tun').getAttribute('aria-checked') !== 'true' }));
   $('br').addEventListener('click', toggleBrowser);
   $('extra').addEventListener('input', () => editDraft({ extra: $('extra').value }));
+  $('ranges-add').addEventListener('click', addMissingRanges);
   $('fw-cancel').addEventListener('click', () => { fwDraft = null; fwError = ''; renderKillSwitch(); });
   $('fw-apply').addEventListener('click', applyFirewall);
 

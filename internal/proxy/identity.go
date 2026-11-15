@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,6 +33,13 @@ func Listening(listen string) bool {
 	}
 	c.Close()
 	return true
+}
+
+// Client makes requests through the local proxy, and so through the active
+// server.
+func Client(listen string) *http.Client {
+	via := &url.URL{Scheme: "http", Host: listen}
+	return &http.Client{Timeout: time.Minute, Transport: &http.Transport{Proxy: http.ProxyURL(via), DisableKeepAlives: true}}
 }
 
 // ConnectVia asks the local proxy to open a tunnel to target.

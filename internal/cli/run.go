@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,7 +54,9 @@ func runServe(args []string) error {
 		os.Exit(0)
 	}()
 	go browser.Keep(browser.PACURL(cfg.Listen), 10*time.Second)
-	return proxy.Run(cfg.Listen, m, panel.NewHandler(m, cfg.Listen))
+	published := &firewall.Published{}
+	go published.Watch(proxy.Client(cfg.Listen))
+	return proxy.Run(cfg.Listen, m, panel.NewHandler(m, cfg.Listen, published))
 }
 
 // runUI opens the settings window and returns at once: the window lives in
@@ -129,6 +133,7 @@ func runStatus([]string) error {
 	v6 := firewall.DirectProbe("tcp6", probeHost)
 	fmt.Printf("direct IPv4:     %s\n", v4)
 	fmt.Printf("direct IPv6:     %s\n", v6)
+	fmt.Printf("address list:    %s\n", describeRanges(cfg))
 	switch {
 	case !firewall.IsOpen(v4) && !firewall.IsOpen(v6):
 	case cfg.AllowTunnels:
@@ -137,6 +142,22 @@ func runStatus([]string) error {
 		fmt.Println("\nKILL SWITCH IS NOT ACTIVE: Claude can bypass the proxy. Run `claudeguard enable`.")
 	}
 	return nil
+}
+
+// describeRanges reads Anthropic's published addresses through the proxy
+// and says whether the kill switch covers them all.
+func describeRanges(cfg config.Config) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var published firewall.Published
+	if err := published.Refresh(ctx, proxy.Client(cfg.Listen)); err != nil {
+		return "not checked (" + sysutil.ShortErr(err) + ")"
+	}
+	missing := published.Report(firewallOptions(cfg)).Missing
+	if len(missing) == 0 {
+		return "covers everything Anthropic publishes"
+	}
+	return "NOT BLOCKED: " + strings.Join(missing, ", ") + " (new on Anthropic's list). Add them in `claudeguard ui`, section «Защита»"
 }
 
 // describeActive names the active server, without the proxy password.

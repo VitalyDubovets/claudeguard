@@ -25,7 +25,7 @@ func startPanel(t *testing.T, cfg config.Config) (string, *proxy.Manager) {
 	cfg.Listen = listen
 	cfg.Normalize()
 	m := proxy.NewManager(cfg, func(config.Config) error { return nil })
-	go proxy.Serve(ln, m, NewHandler(m, listen))
+	go proxy.Serve(ln, m, NewHandler(m, listen, nil))
 	t.Cleanup(func() { ln.Close(); m.Stop() })
 	return listen, m
 }

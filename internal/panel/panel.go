@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 
 	"github.com/VitalyDubovets/claudeguard/internal/browser"
+	"github.com/VitalyDubovets/claudeguard/internal/firewall"
 	"github.com/VitalyDubovets/claudeguard/internal/proxy"
 	"github.com/VitalyDubovets/claudeguard/internal/tunnel"
 )
@@ -34,14 +35,17 @@ type handler struct {
 	static http.Handler
 	routes map[string]http.HandlerFunc
 	keys   tunnel.HostKeys
+	// published is Anthropic's address list as the proxy last read it;
+	// nil where nothing reads it.
+	published *firewall.Published
 	// setupStep is how far the running /api/setup has got, for the panel.
 	setupStep atomic.Int32
 }
 
 // NewHandler returns what the proxy answers on /ui, /api/ and /proxy.pac.
-func NewHandler(m *proxy.Manager, listen string) http.Handler {
+func NewHandler(m *proxy.Manager, listen string, published *firewall.Published) http.Handler {
 	sub, _ := fs.Sub(uiFiles, "ui")
-	h := &handler{m: m, listen: listen, static: http.StripPrefix("/ui/", http.FileServer(http.FS(sub)))}
+	h := &handler{m: m, listen: listen, published: published, static: http.StripPrefix("/ui/", http.FileServer(http.FS(sub)))}
 	h.routes = map[string]http.HandlerFunc{
 		"GET /api/state":      h.getState,
 		"GET /api/check":      h.getCheck,

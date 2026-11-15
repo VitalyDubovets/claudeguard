@@ -33,6 +33,8 @@ type State struct {
 	ExtraBlock   []string          `json:"extra_block"`
 	BrowserProxy bool              `json:"browser_proxy"`
 	PACURL       string            `json:"pac_url"`
+	// Ranges is the kill switch against Anthropic's published addresses.
+	Ranges firewall.RangeReport `json:"ranges"`
 }
 
 func (h *handler) getState(w http.ResponseWriter, _ *http.Request) {
@@ -51,6 +53,7 @@ func (h *handler) getState(w http.ResponseWriter, _ *http.Request) {
 		ExtraBlock:   cfg.ExtraBlock,
 		BrowserProxy: browser.Enabled(pac),
 		PACURL:       pac,
+		Ranges:       h.published.Report(firewall.Options{AllowTunnels: cfg.AllowTunnels, Extra: cfg.ExtraBlock}),
 	}
 	for _, p := range cfg.Profiles {
 		pv := ProfileView{Profile: p}
