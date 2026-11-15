@@ -58,6 +58,13 @@ func systemPAC(ours string) (pacState, string, error) {
 			foreign = url
 		}
 	}
+	if foreign == "" {
+		if out, err := sysutil.Run("scutil", "--proxy"); err == nil {
+			if m := scutilManual(out); m != "" {
+				foreign = manualNote(m)
+			}
+		}
+	}
 	return st, foreign, nil
 }
 
@@ -107,4 +114,22 @@ func systemPACIs(ours string) bool {
 		}
 	}
 	return false
+}
+
+// carried is the services seen with our address, for systemPACWhole. Keep
+// is its only caller and holds switchMu.
+var carried = map[string]bool{}
+
+// systemPACWhole reports whether our address is still on every service it
+// was on. Keep goes by this one: a program that clears the service in use
+// leaves the address on the idle ones, and "on somewhere" would never
+// notice. Services that never took the address (some VPN entries refuse
+// it) do not count, or Keep would rewrite the setting on every tick.
+func systemPACWhole(ours string) bool {
+	now := map[string]bool{}
+	for _, s := range networkServices() {
+		url, on := servicePAC(s)
+		now[s] = on && url == ours
+	}
+	return stillWhole(carried, now)
 }

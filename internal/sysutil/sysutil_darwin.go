@@ -35,6 +35,7 @@ var SystemTools = map[string]string{
 	"defaults":     "/usr/bin/defaults",
 	"pkill":        "/usr/bin/pkill",
 	"networksetup": "/usr/sbin/networksetup",
+	"scutil":       "/usr/sbin/scutil",
 }
 
 // Run runs a system tool and returns its combined output; the error

@@ -77,17 +77,24 @@ func Disable(url string) error {
 	switchMu.Lock()
 	defer switchMu.Unlock()
 	var prev pacState
-	p, err := PrevPath()
-	if err == nil {
+	var saved []byte
+	p, perr := PrevPath()
+	if perr == nil {
 		if data, err := os.ReadFile(p); err == nil {
+			saved = data
 			_ = json.Unmarshal(data, &prev)
 		}
+		// The snapshot goes before the setting does. Uninstall runs Disable
+		// in a process of its own while the background proxy still runs
+		// Keep, and Keep reads "snapshot there, setting cleared" as another
+		// program's doing.
+		_ = os.Remove(p)
 	}
 	if err := restoreSystemPAC(prev, url); err != nil && !errors.Is(err, errNoSystemPAC) {
+		if saved != nil {
+			_ = os.WriteFile(p, saved, 0o600)
+		}
 		return err
-	}
-	if p != "" {
-		_ = os.Remove(p)
 	}
 	return nil
 }
@@ -98,8 +105,9 @@ var switchMu sync.Mutex
 // The system calls behind Keep, replaced in tests.
 var (
 	readPAC  = systemPAC
-	pacIsOn  = systemPACIs
+	pacIsOn  = systemPACWhole
 	writePAC = setSystemPAC
+	undoPAC  = restoreSystemPAC
 )
 
 // Keep puts our PAC address back when something else wiped it while the
@@ -107,12 +115,18 @@ var (
 // stop, and with the kill switch up that leaves browsers with no way to
 // Claude. A setting someone pointed elsewhere is theirs and stays.
 func Keep(url string, every time.Duration) {
+	// One line per incident: a setting that will not stay put must not fill
+	// the log every tick.
+	again := false
 	for range time.Tick(every) {
-		if restored, err := keepOnce(url); err != nil {
+		restored, err := keepOnce(url)
+		switch {
+		case err != nil:
 			log.Printf("browser proxy: could not put the system setting back: %v", err)
-		} else if restored {
+		case restored && !again:
 			log.Printf("browser proxy: the system setting was cleared by another program, put back")
 		}
+		again = restored
 	}
 }
 
@@ -137,10 +151,16 @@ func keepOnce(url string) (restored bool, err error) {
 		return false, err
 	}
 	ForgetState()
+	// Disable in another process may have run since the check above: with
+	// the snapshot gone the switch is off, and our address must not stay.
+	if _, err := os.Stat(p); err != nil {
+		_ = undoPAC(nil, url)
+		return false, nil
+	}
 	return true, nil
 }
 
-var errNoSystemPAC =errors.New("на этой системе Claudeguard не умеет менять настройки прокси сам")
+var errNoSystemPAC = errors.New("на этой системе Claudeguard не умеет менять настройки прокси сам")
 
 // pacCache keeps the panel's two-second poll from running system tools
 // every time.
@@ -166,4 +186,61 @@ func ForgetState() {
 	pacCache.Lock()
 	pacCache.at = time.Time{}
 	pacCache.Unlock()
+}
+
+// manualNote is how a proxy set by hand is named as the foreign setting.
+func manualNote(addr string) string { return "задан вручную: " + addr }
+
+// regValue picks one value out of `reg query` output.
+func regValue(out, name string) string {
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) >= 2 && strings.EqualFold(f[0], name) && strings.HasPrefix(f[1], "REG_") {
+			_, v, _ := strings.Cut(l, f[1])
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// scutilManual finds a proxy set by hand and switched on in the output of
+// `scutil --proxy`, or returns "".
+func scutilManual(out string) string {
+	vals := map[string]string{}
+	for _, l := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(l, " : "); ok {
+			vals[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	for _, kind := range []string{"HTTP", "HTTPS", "SOCKS"} {
+		if host := vals[kind+"Proxy"]; vals[kind+"Enable"] == "1" && host != "" {
+			if port := vals[kind+"Port"]; port != "" {
+				host += ":" + port
+			}
+			return host
+		}
+	}
+	return ""
+}
+
+// stillWhole compares the services that carry our address now with the
+// ones that carried it before, and brings carried up to date: a service
+// that is gone is forgotten, one that lost the address stays until it has
+// it again.
+func stillWhole(carried, now map[string]bool) bool {
+	some, whole := false, true
+	for s, has := range now {
+		switch {
+		case has:
+			some, carried[s] = true, true
+		case carried[s]:
+			whole = false
+		}
+	}
+	for s := range carried {
+		if _, there := now[s]; !there {
+			delete(carried, s)
+		}
+	}
+	return some && whole
 }

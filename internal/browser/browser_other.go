@@ -9,3 +9,5 @@ func setSystemPAC(string) error { return errNoSystemPAC }
 func restoreSystemPAC(pacState, string) error { return errNoSystemPAC }
 
 func systemPACIs(string) bool { return false }
+
+func systemPACWhole(string) bool { return false }

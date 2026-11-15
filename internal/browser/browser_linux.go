@@ -78,3 +78,5 @@ func systemPACIs(ours string) bool {
 	mode, url, err := gnomePAC()
 	return err == nil && mode == "auto" && url == ours
 }
+
+func systemPACWhole(ours string) bool { return systemPACIs(ours) }

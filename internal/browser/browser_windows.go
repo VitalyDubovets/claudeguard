@@ -2,7 +2,6 @@ package browser
 
 import (
 	"os/exec"
-	"strings"
 	"syscall"
 
 	"github.com/VitalyDubovets/claudeguard/internal/sysutil"
@@ -10,19 +9,26 @@ import (
 
 const inetKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
-func inetPAC() string {
-	cmd := exec.Command(sysutil.SysTool("reg.exe"), "query", inetKey, "/v", "AutoConfigURL")
+func inetValue(name string) string {
+	cmd := exec.Command(sysutil.SysTool("reg.exe"), "query", inetKey, "/v", name)
 	sysutil.HideChildWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
-	for _, l := range strings.Split(string(out), "\n") {
-		if _, v, ok := strings.Cut(l, "REG_SZ"); ok && strings.Contains(l, "AutoConfigURL") {
-			return strings.TrimSpace(v)
-		}
+	return regValue(string(out), name)
+}
+
+func inetPAC() string { return inetValue("AutoConfigURL") }
+
+// manualProxy is the proxy typed into the system settings and switched on.
+// A PAC address wins over it, so ours on top would take that proxy away
+// from every site that is not Claude's.
+func manualProxy() string {
+	if inetValue("ProxyEnable") != "0x1" {
+		return ""
 	}
-	return ""
+	return inetValue("ProxyServer")
 }
 
 func inetSet(url string) error {
@@ -45,7 +51,13 @@ func systemPAC(ours string) (pacState, string, error) {
 	if url == ours {
 		return pacState{}, "", nil
 	}
-	return pacState{"url": url}, url, nil
+	foreign := url
+	if foreign == "" {
+		if m := manualProxy(); m != "" {
+			foreign = manualNote(m)
+		}
+	}
+	return pacState{"url": url}, foreign, nil
 }
 
 func setSystemPAC(url string) error { return inetSet(url) }
@@ -58,3 +70,5 @@ func restoreSystemPAC(prev pacState, ours string) error {
 }
 
 func systemPACIs(ours string) bool { return inetPAC() == ours }
+
+func systemPACWhole(ours string) bool { return systemPACIs(ours) }

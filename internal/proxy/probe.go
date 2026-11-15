@@ -30,9 +30,12 @@ type testResult struct {
 // Test checks a server without making it active: for SSH it brings
 // up a throwaway tunnel on a spare port.
 func (m *Manager) Test(ctx context.Context, name string) testResult {
+	was, _ := m.Config().Find(name)
 	res := m.runTest(ctx, name)
 	m.mu.Lock()
-	if _, ok := m.cfg.Find(name); ok {
+	// The profile may have been edited while the test ran: a result for the
+	// old address is not this server's.
+	if now, ok := m.cfg.Find(name); ok && now == was {
 		m.tests[name] = TestRecord{testResult: res, At: time.Now()}
 	}
 	m.mu.Unlock()

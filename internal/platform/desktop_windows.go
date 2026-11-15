@@ -36,8 +36,11 @@ func elevateWith(args []string, hidden bool) error {
 		style = " -WindowStyle Hidden"
 	}
 	// Start-Process throws when the UAC prompt is declined; any other exit
-	// code is the elevated command's own.
-	script := fmt.Sprintf("try { $p = Start-Process -FilePath %s -ArgumentList %s -Verb RunAs%s -Wait -PassThru } catch { exit %d }; exit $p.ExitCode",
+	// code is the elevated command's own. A failure that names a different
+	// system error is reported as itself, not as a refusal.
+	script := fmt.Sprintf("try { $p = Start-Process -FilePath %[1]s -ArgumentList %[2]s -Verb RunAs%[3]s -Wait -PassThru } catch { "+
+		"$c = $_.Exception.NativeErrorCode; if (-not $c) { $c = $_.Exception.InnerException.NativeErrorCode }; "+
+		"if ($c -and $c -ne %[4]d) { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }; exit %[4]d }; exit $p.ExitCode",
 		firewall.PSQuote(exe), firewall.PSQuote(strings.Join(args, " ")), style, uacDeclined)
 	cmd := exec.Command(sysutil.SysTool("powershell.exe"), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

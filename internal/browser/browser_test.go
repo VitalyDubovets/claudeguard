@@ -49,8 +49,9 @@ func TestKeepOnce(t *testing.T) {
 	const ours = "http://127.0.0.1:1/proxy.pac"
 	system := ""
 	writes := 0
-	oldRead, oldOn, oldWrite := readPAC, pacIsOn, writePAC
-	t.Cleanup(func() { readPAC, pacIsOn, writePAC = oldRead, oldOn, oldWrite })
+	oldRead, oldOn, oldWrite, oldUndo := readPAC, pacIsOn, writePAC, undoPAC
+	t.Cleanup(func() { readPAC, pacIsOn, writePAC, undoPAC = oldRead, oldOn, oldWrite, oldUndo })
+	undoPAC = func(pacState, string) error { system = ""; return nil }
 	readPAC = func(string) (pacState, string, error) {
 		if system == ours {
 			return pacState{}, "", nil
@@ -86,6 +87,59 @@ func TestKeepOnce(t *testing.T) {
 	system = "http://other/proxy.pac"
 	if got, _ := keepOnce(ours); got || system != "http://other/proxy.pac" {
 		t.Fatalf("replaced a foreign setting")
+	}
+
+	// The switch went off in another process while the address was being
+	// written: it is taken back out.
+	system = ""
+	writePAC = func(url string) error { system = url; return os.Remove(p) }
+	if got, _ := keepOnce(ours); got || system != "" {
+		t.Fatalf("left our address after the switch went off: got %v, system %q", got, system)
+	}
+}
+
+func TestStillWhole(t *testing.T) {
+	carried := map[string]bool{}
+	// A VPN entry that never took the address does not make it "cleared".
+	if !stillWhole(carried, map[string]bool{"Wi-Fi": true, "Ethernet": true, "VPN": false}) {
+		t.Fatal("whole setting reported as cleared")
+	}
+	// The service in use lost it, the idle one still has it.
+	if stillWhole(carried, map[string]bool{"Wi-Fi": false, "Ethernet": true, "VPN": false}) {
+		t.Fatal("partial clearing not noticed")
+	}
+	// Still missing on the next tick.
+	if stillWhole(carried, map[string]bool{"Wi-Fi": false, "Ethernet": true, "VPN": false}) {
+		t.Fatal("forgot the service that lost the address")
+	}
+	// A removed service is not waited for.
+	if !stillWhole(carried, map[string]bool{"Ethernet": true, "VPN": false}) {
+		t.Fatal("waits for a service that is gone")
+	}
+	// Nowhere at all.
+	if stillWhole(carried, map[string]bool{"Ethernet": false}) {
+		t.Fatal("cleared everywhere reported as whole")
+	}
+}
+
+func TestManualProxyParsing(t *testing.T) {
+	reg := "\r\nHKEY_CURRENT_USER\\Software\\...\\Internet Settings\r\n    ProxyServer    REG_SZ    127.0.0.1:7890\r\n\r\n"
+	if got := regValue(reg, "ProxyServer"); got != "127.0.0.1:7890" {
+		t.Errorf("ProxyServer = %q", got)
+	}
+	if got := regValue("    ProxyEnable    REG_DWORD    0x1\r\n", "ProxyEnable"); got != "0x1" {
+		t.Errorf("ProxyEnable = %q", got)
+	}
+	if got := regValue(reg, "AutoConfigURL"); got != "" {
+		t.Errorf("absent value = %q", got)
+	}
+
+	on := "<dictionary> {\n  HTTPEnable : 0\n  HTTPProxy : old\n  SOCKSEnable : 1\n  SOCKSPort : 7890\n  SOCKSProxy : 127.0.0.1\n}\n"
+	if got := scutilManual(on); got != "127.0.0.1:7890" {
+		t.Errorf("scutil manual = %q", got)
+	}
+	if got := scutilManual("<dictionary> {\n  FTPPassive : 1\n}\n"); got != "" {
+		t.Errorf("no proxy = %q", got)
 	}
 }
 
